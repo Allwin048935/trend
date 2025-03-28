@@ -30,27 +30,29 @@ def get_binance_data(symbol='BTCUSDT', interval='1d', lookback=30):
     df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close'] + [None]*7)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df = df.set_index('timestamp')[['open', 'high', 'low', 'close']].astype(float)
-    df.columns = ['Open', 'High', 'Low', 'Close']  # Capitalize for mpf compatibility
+    df.columns = ['Open', 'High', 'Low', 'Close']
     return df
 
 def calculate_trendlines(data):
     recent_data = data.tail(20)
-    x = np.arange(len(recent_data))
-    x_extended = np.arange(-len(data)//2, len(data) + len(data)//2)
+    x_recent = np.arange(len(recent_data))
     
     # Support trendline
     support_indices = recent_data['Low'].nsmallest(2).index
     support_x = [recent_data.index.get_loc(idx) for idx in support_indices]
     support_y = [recent_data['Low'].loc[idx] for idx in support_indices]
     support_slope, support_intercept = np.polyfit(support_x, support_y, 1)
-    support_line = support_slope * x_extended + support_intercept
     
     # Resistance trendline
     resist_indices = recent_data['High'].nlargest(2).index
     resist_x = [recent_data.index.get_loc(idx) for idx in resist_indices]
     resist_y = [recent_data['High'].loc[idx] for idx in resist_indices]
     resist_slope, resist_intercept = np.polyfit(resist_x, resist_y, 1)
-    resist_line = resist_slope * x_extended + resist_intercept
+    
+    # Calculate trendlines for full data length
+    x_full = np.arange(len(data))
+    support_line = support_slope * x_full + support_intercept
+    resist_line = resist_slope * x_full + resist_intercept
     
     # Channel type
     if support_slope > 0 and resist_slope > 0:
@@ -60,22 +62,18 @@ def calculate_trendlines(data):
     else:
         channel_type = "Horizontal Channel"
     
-    return support_line, resist_line, channel_type, x_extended
+    return support_line, resist_line, channel_type
 
 async def plot_candles(df, symbol='BTCUSDT'):
     if df.empty:
         return None
     
     # Calculate trendlines
-    support_line, resist_line, channel_type, x_extended = calculate_trendlines(df)
+    support_line, resist_line, channel_type = calculate_trendlines(df)
     
-    # Create extended datetime index
-    time_delta = df.index[1] - df.index[0]
-    extended_dates = [df.index[0] + time_delta * i for i in x_extended]
-    
-    # Prepare extended trendline data
-    support_df = pd.Series(support_line, index=extended_dates)
-    resist_df = pd.Series(resist_line, index=extended_dates)
+    # Prepare trendline data with same index as df
+    support_df = pd.Series(support_line, index=df.index)
+    resist_df = pd.Series(resist_line, index=df.index)
     
     # Market colors and style
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
@@ -98,7 +96,7 @@ async def plot_candles(df, symbol='BTCUSDT'):
     )
     
     ax = axlist[0]
-    # Set y-axis limits with some padding
+    # Set y-axis limits with padding
     price_range = df['High'].max() - df['Low'].min()
     ax.set_ylim(df['Low'].min() - 0.05 * price_range, df['High'].max() + 0.05 * price_range)
     

@@ -6,6 +6,7 @@ import telegram
 import asyncio
 import json
 from io import BytesIO
+import mplfinance as mpf
 
 # Load config
 with open('config.json', 'r') as f:
@@ -33,29 +34,31 @@ def get_binance_data(symbol='BTCUSDT', interval='1d', lookback=30):
 
 def calculate_trendlines(data):
     x = np.arange(len(data))
-    x_extended = np.arange(-len(data)//2, len(data) + len(data)//2)  # Extend line both ways
+    x_extended = np.arange(-len(data)//2, len(data) + len(data)//2)
     
-    # Support trendline - find two lowest points
+    # Support trendline - find two lowest points and ensure positive slope
     support_indices = data['low'].nsmallest(2).index
     support_x = [data.index.get_loc(idx) for idx in support_indices]
     support_y = [data['low'].loc[idx] for idx in support_indices]
     support_slope, support_intercept = np.polyfit(support_x, support_y, 1)
+    # Force positive slope for ascending channel
+    if support_slope <= 0:
+        support_slope = 0.001  # Small positive slope
+        support_intercept = min(support_y) - support_slope * min(support_x)
     support_line = support_slope * x_extended + support_intercept
     
-    # Resistance trendline - find two highest points
+    # Resistance trendline - find two highest points and ensure positive slope
     resist_indices = data['high'].nlargest(2).index
     resist_x = [data.index.get_loc(idx) for idx in resist_indices]
     resist_y = [data['high'].loc[idx] for idx in resist_indices]
     resist_slope, resist_intercept = np.polyfit(resist_x, resist_y, 1)
+    # Force positive slope for ascending channel
+    if resist_slope <= 0:
+        resist_slope = 0.001  # Small positive slope
+        resist_intercept = max(resist_y) - resist_slope * max(resist_x)
     resist_line = resist_slope * x_extended + resist_intercept
     
-    # Determine channel type
-    if support_slope > 0 and resist_slope > 0:
-        channel_type = "Ascending Channel"
-    elif support_slope < 0 and resist_slope < 0:
-        channel_type = "Descending Channel"
-    else:
-        channel_type = "Horizontal Channel"
+    channel_type = "Ascending Channel"
     
     return support_line, resist_line, channel_type, x_extended
 
@@ -70,12 +73,13 @@ async def main():
     time_delta = data.index[1] - data.index[0]
     extended_dates = [data.index[0] + time_delta * i for i in x_extended]
     
-    # Plot
+    # Prepare candlestick plot with trendlines
     plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(12, 6))
     
-    # Plot price
-    ax.plot(data.index, data['close'], label='Price', color='white')
+    # Plot candlesticks using mplfinance
+    mpf.plot(data, type='candle', style='binance', ax=ax, volume=False, 
+             show_nontrading=False, warn_too_much_data=1000)
     
     # Plot extended trendlines
     ax.plot(extended_dates, support_line, color='green', label='Support', linestyle='--')

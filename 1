@@ -33,22 +33,25 @@ def get_binance_data(symbol='BTCUSDT', interval='8h', lookback=100):
     df.columns = ['Open', 'High', 'Low', 'Close']
     return df
 
-def calculate_trendline_set(data_segment):
-    x = np.arange(len(data_segment))
+def calculate_trendline_set(data_segment, full_length, start_idx):
+    x_segment = np.arange(len(data_segment))
     
     # Support trendline
     support_indices = data_segment['Low'].nsmallest(2).index
     support_x = [data_segment.index.get_loc(idx) for idx in support_indices]
     support_y = [data_segment['Low'].loc[idx] for idx in support_indices]
     support_slope, support_intercept = np.polyfit(support_x, support_y, 1)
-    support_line = support_slope * x + support_intercept
     
     # Resistance trendline
     resist_indices = data_segment['High'].nlargest(2).index
     resist_x = [data_segment.index.get_loc(idx) for idx in resist_indices]
     resist_y = [data_segment['High'].loc[idx] for idx in resist_indices]
     resist_slope, resist_intercept = np.polyfit(resist_x, resist_y, 1)
-    resist_line = resist_slope * x + resist_intercept
+    
+    # Extend trendlines to full length
+    x_full = np.arange(full_length)
+    support_line = support_slope * (x_full - start_idx) + support_intercept
+    resist_line = resist_slope * (x_full - start_idx) + resist_intercept
     
     # Channel type
     if support_slope > 0 and resist_slope > 0:
@@ -67,10 +70,10 @@ def calculate_all_trendlines(data, window=20):
         start_idx = i * window
         end_idx = (i + 1) * window
         segment = data.iloc[start_idx:end_idx]
-        support_line, resist_line, channel_type = calculate_trendline_set(segment)
+        support_line, resist_line, channel_type = calculate_trendline_set(segment, len(data), start_idx)
         trendline_sets.append({
-            'support': pd.Series(support_line, index=segment.index),
-            'resistance': pd.Series(resist_line, index=segment.index),
+            'support': pd.Series(support_line, index=data.index),
+            'resistance': pd.Series(resist_line, index=data.index),
             'channel_type': channel_type,
             'start_idx': start_idx
         })

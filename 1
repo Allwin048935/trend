@@ -33,24 +33,21 @@ def get_binance_data(symbol='BTCUSDT', interval='1d', lookback=30):
 
 def calculate_trendlines(data):
     x = np.arange(len(data))
+    x_extended = np.arange(-len(data)//2, len(data) + len(data)//2)  # Extend line both ways
     
-    # Support trendline (based on lows)
-    support_idx = data['low'].argmin()
-    support_slope, support_intercept = np.polyfit(
-        [0, support_idx, len(data)-1], 
-        [data['low'].iloc[0], data['low'].iloc[support_idx], data['low'].iloc[-1]], 
-        1
-    )
-    support_line = support_slope * x + support_intercept
+    # Support trendline - find two lowest points
+    support_indices = data['low'].nsmallest(2).index
+    support_x = [data.index.get_loc(idx) for idx in support_indices]
+    support_y = [data['low'].loc[idx] for idx in support_indices]
+    support_slope, support_intercept = np.polyfit(support_x, support_y, 1)
+    support_line = support_slope * x_extended + support_intercept
     
-    # Resistance trendline (based on highs)
-    resist_idx = data['high'].argmax()
-    resist_slope, resist_intercept = np.polyfit(
-        [0, resist_idx, len(data)-1], 
-        [data['high'].iloc[0], data['high'].iloc[resist_idx], data['high'].iloc[-1]], 
-        1
-    )
-    resist_line = resist_slope * x + resist_intercept
+    # Resistance trendline - find two highest points
+    resist_indices = data['high'].nlargest(2).index
+    resist_x = [data.index.get_loc(idx) for idx in resist_indices]
+    resist_y = [data['high'].loc[idx] for idx in resist_indices]
+    resist_slope, resist_intercept = np.polyfit(resist_x, resist_y, 1)
+    resist_line = resist_slope * x_extended + resist_intercept
     
     # Determine channel type
     if support_slope > 0 and resist_slope > 0:
@@ -60,25 +57,29 @@ def calculate_trendlines(data):
     else:
         channel_type = "Horizontal Channel"
     
-    return support_line, resist_line, channel_type
+    return support_line, resist_line, channel_type, x_extended
 
 async def main():
     # Get data
     data = get_binance_data()
     
     # Calculate trendlines
-    support_line, resist_line, channel_type = calculate_trendlines(data)
+    support_line, resist_line, channel_type, x_extended = calculate_trendlines(data)
+    
+    # Create extended datetime index for plotting
+    time_delta = data.index[1] - data.index[0]
+    extended_dates = [data.index[0] + time_delta * i for i in x_extended]
     
     # Plot
     plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(12, 6))
     
-    # Plot price (convert index to matplotlib-compatible format)
+    # Plot price
     ax.plot(data.index, data['close'], label='Price', color='white')
     
-    # Plot trendlines using the same x-values as the price
-    ax.plot(data.index, support_line, color='green', label='Support', linestyle='--')
-    ax.plot(data.index, resist_line, color='red', label='Resistance', linestyle='--')
+    # Plot extended trendlines
+    ax.plot(extended_dates, support_line, color='green', label='Support', linestyle='--')
+    ax.plot(extended_dates, resist_line, color='red', label='Resistance', linestyle='--')
     
     ax.set_ylabel('Price (log scale)')
     plt.title(f"BTCUSDT - {channel_type} - {pd.Timestamp.now().strftime('%Y-%m-%d')}")

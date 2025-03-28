@@ -25,7 +25,7 @@ async def send_to_telegram(image_buffer):
     except telegram.error.BadRequest as e:
         print(f"Telegram error: {e}. Please check your chat_id and bot permissions.")
 
-def get_binance_data(symbol='BTCUSDT', interval='8h', lookback=100):
+def get_binance_data(symbol='BTCUSDT', interval='15m', lookback=100):
     klines = client.get_historical_klines(symbol, interval, limit=lookback)
     df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close'] + [None]*7)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')

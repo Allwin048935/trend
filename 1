@@ -7,25 +7,30 @@ import asyncio
 import json
 from io import BytesIO
 
-# Load config
+# Load config with both Binance and Telegram credentials
 with open('config.json', 'r') as f:
     config = json.load(f)
+    BINANCE_API_KEY = config['binance_api_key']
+    BINANCE_API_SECRET = config['binance_api_secret']
     TELEGRAM_TOKEN = config['telegram_token']
     TELEGRAM_CHAT_ID = config['telegram_chat_id']
 
-# Binance client (add your credentials)
-client = Client('SvvG1ooYWYpLEZnSMoMbO2qN246CfnCFvB87sVOISg6KPkukq07BpmkqWfWC62yT', 'RhAuSUL6iipT1o1yA9yDTdZoRTdqcLM2KSPYxtvrLMBmGlY8KeljnaNoPfFfhltf')
+# Initialize Binance client with config credentials
+client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
 
 async def send_to_telegram(image_buffer):
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=image_buffer)
+    try:
+        await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=image_buffer)
+    except telegram.error.BadRequest as e:
+        print(f"Telegram error: {e}. Please check your chat_id and bot permissions.")
 
 def get_binance_data(symbol='BTCUSDT', interval='1d', lookback=30):
     klines = client.get_historical_klines(symbol, interval, limit=lookback)
     df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close'] + [None]*7)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df = df.set_index('timestamp')[['open', 'high', 'low', 'close']].astype(float)
-    return np.log(df)  # Return log-transformed data
+    return np.log(df)
 
 def get_trendline_slope(data, is_support=True):
     x = np.arange(len(data))

@@ -34,6 +34,7 @@ def get_binance_data(symbol='BTCUSDT', interval='1d', lookback=30):
     return df
 
 def calculate_trendlines(data):
+    # Use only the last 20 candles
     recent_data = data.tail(20)
     x_recent = np.arange(len(recent_data))
     
@@ -42,17 +43,14 @@ def calculate_trendlines(data):
     support_x = [recent_data.index.get_loc(idx) for idx in support_indices]
     support_y = [recent_data['Low'].loc[idx] for idx in support_indices]
     support_slope, support_intercept = np.polyfit(support_x, support_y, 1)
+    support_line = support_slope * x_recent + support_intercept
     
     # Resistance trendline
     resist_indices = recent_data['High'].nlargest(2).index
     resist_x = [recent_data.index.get_loc(idx) for idx in resist_indices]
     resist_y = [recent_data['High'].loc[idx] for idx in resist_indices]
     resist_slope, resist_intercept = np.polyfit(resist_x, resist_y, 1)
-    
-    # Calculate trendlines for full data length
-    x_full = np.arange(len(data))
-    support_line = support_slope * x_full + support_intercept
-    resist_line = resist_slope * x_full + resist_intercept
+    resist_line = resist_slope * x_recent + resist_intercept
     
     # Channel type
     if support_slope > 0 and resist_slope > 0:
@@ -62,18 +60,18 @@ def calculate_trendlines(data):
     else:
         channel_type = "Horizontal Channel"
     
-    return support_line, resist_line, channel_type
+    return support_line, resist_line, channel_type, recent_data.index
 
 async def plot_candles(df, symbol='BTCUSDT'):
     if df.empty:
         return None
     
-    # Calculate trendlines
-    support_line, resist_line, channel_type = calculate_trendlines(df)
+    # Calculate trendlines for last 20 candles
+    support_line, resist_line, channel_type, recent_index = calculate_trendlines(df)
     
-    # Prepare trendline data with same index as df
-    support_df = pd.Series(support_line, index=df.index)
-    resist_df = pd.Series(resist_line, index=df.index)
+    # Prepare trendline data with the last 20 candles' index
+    support_df = pd.Series(support_line, index=recent_index)
+    resist_df = pd.Series(resist_line, index=recent_index)
     
     # Market colors and style
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)

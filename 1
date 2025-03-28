@@ -73,10 +73,10 @@ async def main():
     plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(12, 6))
     
-    # Plot price
-    data['close'].plot(ax=ax, label='Price', color='white')
+    # Plot price (convert index to matplotlib-compatible format)
+    ax.plot(data.index, data['close'], label='Price', color='white')
     
-    # Plot trendlines
+    # Plot trendlines using the same x-values as the price
     ax.plot(data.index, support_line, color='green', label='Support', linestyle='--')
     ax.plot(data.index, resist_line, color='red', label='Resistance', linestyle='--')
     

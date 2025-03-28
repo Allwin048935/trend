@@ -25,7 +25,7 @@ async def send_to_telegram(image_buffer):
     except telegram.error.BadRequest as e:
         print(f"Telegram error: {e}. Please check your chat_id and bot permissions.")
 
-def get_binance_data(symbol='BTCUSDT', interval='15m', lookback=100):
+def get_binance_data(symbol='BTCUSDT', interval='8h', lookback=100):
     klines = client.get_historical_klines(symbol, interval, limit=lookback)
     df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close'] + [None]*7)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -36,19 +36,13 @@ def get_binance_data(symbol='BTCUSDT', interval='15m', lookback=100):
 def calculate_trendline_set(data_segment, full_length, start_idx):
     x_segment = np.arange(len(data_segment))
     
-    # Support trendline
-    support_indices = data_segment['Low'].nsmallest(2).index
-    support_x = [data_segment.index.get_loc(idx) for idx in support_indices]
-    support_y = [data_segment['Low'].loc[idx] for idx in support_indices]
-    support_slope, support_intercept = np.polyfit(support_x, support_y, 1)
+    # Support trendline (best fit for lows)
+    support_slope, support_intercept = np.polyfit(x_segment, data_segment['Low'], 1)
     
-    # Resistance trendline
-    resist_indices = data_segment['High'].nlargest(2).index
-    resist_x = [data_segment.index.get_loc(idx) for idx in resist_indices]
-    resist_y = [data_segment['High'].loc[idx] for idx in resist_indices]
-    resist_slope, resist_intercept = np.polyfit(resist_x, resist_y, 1)
+    # Resistance trendline (best fit for highs)
+    resist_slope, resist_intercept = np.polyfit(x_segment, data_segment['High'], 1)
     
-    # Extend trendlines to full length
+    # Extend trendlines to full length, adjusting for segment position
     x_full = np.arange(full_length)
     support_line = support_slope * (x_full - start_idx) + support_intercept
     resist_line = resist_slope * (x_full - start_idx) + resist_intercept
@@ -133,7 +127,7 @@ async def plot_candles(df, symbol='BTCUSDT'):
 
 async def main():
     # Get data
-    data = get_binance_data(interval='15m', lookback=100)  # Fetch 100 8h candles
+    data = get_binance_data(interval='8h', lookback=100)  # Fetch 100 8h candles
     
     # Plot and send
     buffer = await plot_candles(data)

@@ -25,7 +25,7 @@ async def send_to_telegram(image_buffer):
     except telegram.error.BadRequest as e:
         print(f"Telegram error: {e}. Please check your chat_id and bot permissions.")
 
-def get_binance_data(symbol='BTCUSDT', interval='1d', lookback=30):
+def get_binance_data(symbol='BTCUSDT', interval='8h', lookback=30):
     klines = client.get_historical_klines(symbol, interval, limit=lookback)
     df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close'] + [None]*7)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -87,7 +87,7 @@ async def plot_candles(df, symbol='BTCUSDT'):
         type="candle",
         style=s,
         tight_layout=True,
-        datetime_format='%Y-%m-%d',
+        datetime_format='%Y-%m-%d %H:%M',
         ylabel="Price ($)",
         addplot=[
             mpf.make_addplot(support_df, color='green', linestyle='--', label='Support'),
@@ -102,7 +102,7 @@ async def plot_candles(df, symbol='BTCUSDT'):
     ax.set_ylim(df['Low'].min() - 0.05 * price_range, df['High'].max() + 0.05 * price_range)
     
     # Customize title and legend
-    ax.set_title(f"{symbol} - {channel_type} - {pd.Timestamp.now().strftime('%Y-%m-%d')}", 
+    ax.set_title(f"{symbol} - {channel_type} (8h) - {pd.Timestamp.now().strftime('%Y-%m-%d')}", 
                  fontsize=16, style='italic', fontfamily='sans-serif')
     ax.legend(loc='upper left')
     
@@ -115,7 +115,7 @@ async def plot_candles(df, symbol='BTCUSDT'):
 
 async def main():
     # Get data
-    data = get_binance_data()
+    data = get_binance_data(interval='8h')  # Changed to 8-hour candles
     
     # Plot and send
     buffer = await plot_candles(data)

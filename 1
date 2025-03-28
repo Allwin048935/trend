@@ -7,7 +7,7 @@ import asyncio
 import json
 from io import BytesIO
 
-# Load config with both Binance and Telegram credentials
+# Load config
 with open('config.json', 'r') as f:
     config = json.load(f)
     BINANCE_API_KEY = config['binance_api_key']
@@ -15,7 +15,6 @@ with open('config.json', 'r') as f:
     TELEGRAM_TOKEN = config['telegram_token']
     TELEGRAM_CHAT_ID = config['telegram_chat_id']
 
-# Initialize Binance client with config credentials
 client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
 
 async def send_to_telegram(image_buffer):
@@ -32,35 +31,62 @@ def get_binance_data(symbol='BTCUSDT', interval='1d', lookback=30):
     df = df.set_index('timestamp')[['open', 'high', 'low', 'close']].astype(float)
     return np.log(df)
 
-def get_trendline_slope(data, is_support=True):
+def calculate_trendlines(data):
     x = np.arange(len(data))
-    slope, intercept = np.polyfit(x, data, 1)
-    pivot = data.argmin() if is_support else data.argmax()
-    line = slope * x + intercept
-    return slope if (is_support and (line <= data).all()) or (not is_support and (line >= data).all()) else np.nan
+    
+    # Support trendline (based on lows)
+    support_idx = data['low'].argmin()
+    support_slope, support_intercept = np.polyfit(
+        [0, support_idx, len(data)-1], 
+        [data['low'].iloc[0], data['low'].iloc[support_idx], data['low'].iloc[-1]], 
+        1
+    )
+    support_line = support_slope * x + support_intercept
+    
+    # Resistance trendline (based on highs)
+    resist_idx = data['high'].argmax()
+    resist_slope, resist_intercept = np.polyfit(
+        [0, resist_idx, len(data)-1], 
+        [data['high'].iloc[0], data['high'].iloc[resist_idx], data['high'].iloc[-1]], 
+        1
+    )
+    resist_line = resist_slope * x + resist_intercept
+    
+    # Determine channel type
+    if support_slope > 0 and resist_slope > 0:
+        channel_type = "Ascending Channel"
+    elif support_slope < 0 and resist_slope < 0:
+        channel_type = "Descending Channel"
+    else:
+        channel_type = "Horizontal Channel"
+    
+    return support_line, resist_line, channel_type
 
 async def main():
     # Get data
     data = get_binance_data()
     
-    # Calculate slopes
-    support_slope = get_trendline_slope(data['low'], True)
-    resist_slope = get_trendline_slope(data['high'], False)
+    # Calculate trendlines
+    support_line, resist_line, channel_type = calculate_trendlines(data)
     
     # Plot
     plt.style.use('dark_background')
-    fig, ax1 = plt.subplots(figsize=(10, 5))
-    ax2 = ax1.twinx()
+    fig, ax = plt.subplots(figsize=(12, 6))
     
-    data['close'].plot(ax=ax1, label='Price')
-    ax2.axhline(support_slope, color='green', label='Support Slope')
-    ax2.axhline(resist_slope, color='red', label='Resistance Slope')
+    # Plot price
+    data['close'].plot(ax=ax, label='Price', color='white')
     
-    ax1.set_ylabel('Price (log)')
-    ax2.set_ylabel('Slope')
-    plt.title(f"BTCUSDT Trend - {pd.Timestamp.now().strftime('%Y-%m-%d')}")
-    ax1.legend(loc='upper left')
-    ax2.legend(loc='upper right')
+    # Plot trendlines
+    ax.plot(data.index, support_line, color='green', label='Support', linestyle='--')
+    ax.plot(data.index, resist_line, color='red', label='Resistance', linestyle='--')
+    
+    ax.set_ylabel('Price (log scale)')
+    plt.title(f"BTCUSDT - {channel_type} - {pd.Timestamp.now().strftime('%Y-%m-%d')}")
+    ax.legend(loc='upper left')
+    
+    # Adjust layout
+    plt.xticks(rotation=45)
+    plt.tight_layout()
     
     # Send to Telegram
     buffer = BytesIO()

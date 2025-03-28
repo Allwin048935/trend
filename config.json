@@ -1,4 +1,6 @@
 {
+    "binance_api_key": "your_binance_api_key_here",
+    "binance_api_secret": "your_binance_api_secret_here",
     "telegram_token": "7619077339:AAGvLzsABJRFKsv50TgI1XxMNhVvtED-E_4",
     "telegram_chat_id": "385370555"
 }

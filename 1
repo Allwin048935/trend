@@ -133,7 +133,7 @@ async def plot_candles(df, symbol='BTCUSDT'):
 
 async def main():
     # Get data
-    data = get_binance_data(interval='8h', lookback=100)  # Fetch 100 8h candles
+    data = get_binance_data(interval='15m', lookback=100)  # Fetch 100 8h candles
     
     # Plot and send
     buffer = await plot_candles(data)

@@ -14,7 +14,7 @@ with open('config.json', 'r') as f:
     TELEGRAM_CHAT_ID = config['telegram_chat_id']
 
 # Binance client (add your credentials)
-client = Client('YOUR_API_KEY', 'YOUR_API_SECRET')
+client = Client('SvvG1ooYWYpLEZnSMoMbO2qN246CfnCFvB87sVOISg6KPkukq07BpmkqWfWC62yT', 'RhAuSUL6iipT1o1yA9yDTdZoRTdqcLM2KSPYxtvrLMBmGlY8KeljnaNoPfFfhltf')
 
 async def send_to_telegram(image_buffer):
     bot = telegram.Bot(token=TELEGRAM_TOKEN)

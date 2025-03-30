@@ -16,8 +16,6 @@ exchange = ccxt.binance({
 })
 
 # Parameters
-RSI_LENGTH = 9
-INNER_MULT = 1.0
 PRIMARY_TRENDLINE_LENGTH = 20
 SECONDARY_TRENDLINE_LENGTH = 10
 MAX_TRENDLINES = 3
@@ -29,21 +27,6 @@ def get_ohlcv(symbol='BTCUSDT', timeframe='1h', limit=100):
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df.set_index('timestamp', inplace=True)  # Set timestamp as index for mplfinance
     return df
-
-# RSI calculation
-def calculate_rsi(df, length=RSI_LENGTH):
-    delta = df['close'].diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=length).mean()
-    avg_loss = loss.rolling(window=length).mean()
-    rs = avg_gain / avg_loss
-    rsi = 50 + 50 * rs / (1 + rs)
-    return rsi
-
-def calculate_rsi_channel(rsi, length=RSI_LENGTH):
-    rsi_change = rsi.diff().abs()
-    return rsi_change.rolling(window=length).std()
 
 # Trendlines (based on price)
 def find_pivot_points(series, length, left_length):
@@ -92,7 +75,7 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
-# RSI Divergence
+# RSI Divergence (kept since it uses price, but RSI removed)
 def find_divergence(price, rsi):
     divergences = []
     for i in range(2, len(price)-1):
@@ -104,9 +87,8 @@ def find_divergence(price, rsi):
             divergences.append(('bearish', i))
     return divergences
 
-# Plotting with Candlesticks - Corrected
-def create_chart(df, rsi, rsi_channel, 
-                 primary_high_trendlines, primary_low_trendlines,
+# Plotting with Candlesticks - RSI Removed
+def create_chart(df, primary_high_trendlines, primary_low_trendlines,
                  secondary_high_trendlines, secondary_low_trendlines, divergences):
     # Prepare candlestick data
     mpf_data = df[['open', 'high', 'low', 'close']].rename(columns={
@@ -135,7 +117,7 @@ def create_chart(df, rsi, rsi_channel,
                                            linestyle='--', width=1) 
                           for tl in secondary_low_trendlines]
 
-    # Prepare divergence plots - Corrected 'mpl' to 'mpf'
+    # Prepare divergence plots
     divergence_plots = []
     for div_type, idx in divergences:
         color = 'green' if div_type == 'bullish' else 'red'
@@ -145,25 +127,11 @@ def create_chart(df, rsi, rsi_channel,
             color=color, linestyle='--', width=2
         ))
 
-    # RSI plot setup
-    rsi_plot = mpf.make_addplot(rsi.dropna(), panel=1, color='#A64D79', ylabel='RSI')
-    upper_inner = 50 + INNER_MULT * rsi_channel.dropna()
-    lower_inner = 50 - INNER_MULT * rsi_channel.dropna()
-    upper_inner_plot = mpf.make_addplot(upper_inner, panel=1, color='#A64D79', alpha=0.3)
-    lower_inner_plot = mpf.make_addplot(lower_inner, panel=1, color='#A64D79', alpha=0.3)
-
-    # Add horizontal lines for RSI panel (40 and 60)
-    rsi_hline_60 = mpf.make_addplot(pd.Series([60] * len(df), index=df.index), 
-                                   panel=1, color='blue', linestyle='--', alpha=0.3, width=1)
-    rsi_hline_40 = mpf.make_addplot(pd.Series([40] * len(df), index=df.index), 
-                                   panel=1, color='red', linestyle='--', alpha=0.3, width=1)
-
     # Combine all additional plots
-    add_plots = (primary_high_plots + primary_low_plots + secondary_high_plots + secondary_low_trendlines +
-                 divergence_plots + [rsi_plot, upper_inner_plot, lower_inner_plot, 
-                                     rsi_hline_60, rsi_hline_40])
+    add_plots = (primary_high_plots + primary_low_plots + secondary_high_plots + secondary_low_plots +
+                 divergence_plots)
 
-    # Plot using mplfinance
+    # Plot using mplfinance - Single panel for candlesticks
     mpf.plot(
         mpf_data,
         type='candle',
@@ -173,11 +141,7 @@ def create_chart(df, rsi, rsi_channel,
         datetime_format='%Y-%m-%d %H:%M',
         ylabel='Price ($)',
         addplot=add_plots,
-        panel_ratios=(2, 1),  # Price panel larger than RSI panel
-        fill_between=dict(y1=lower_inner.values, y2=upper_inner.values, 
-                         where=(lower_inner.notna() & upper_inner.notna()), 
-                         alpha=0.1, color='#A64D79', panel=1),
-        title='BTCUSDT 15m - Price and RSI'
+        title='BTCUSDT 15m - Candlestick Chart'
     )
 
     plt.savefig('rsi_analysis.png', bbox_inches='tight')
@@ -193,9 +157,6 @@ async def send_to_telegram():
 def main():
     df = get_ohlcv()
     
-    rsi = calculate_rsi(df)
-    rsi_channel = calculate_rsi_channel(rsi)
-    
     # Calculate pivot points using close price
     price_high_pivots, price_low_pivots = find_pivot_points(df['close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
     price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
@@ -205,10 +166,11 @@ def main():
     secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     
-    divergences = find_divergence(df['close'], rsi)
+    # Note: Divergence calculation requires RSI, but since RSI is removed, we'll assume it's not needed
+    # If you still want divergences, we’d need to keep RSI calculation - let me know!
+    divergences = []  # Placeholder; divergences removed unless RSI is re-added
     
-    create_chart(df, rsi, rsi_channel,
-                 primary_high_trendlines, primary_low_trendlines,
+    create_chart(df, primary_high_trendlines, primary_low_trendlines,
                  secondary_high_trendlines, secondary_low_trendlines, divergences)
     
     import asyncio

@@ -44,13 +44,12 @@ def get_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT):
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df = df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'})
         return df
     except Exception as e:
         print(f"Error fetching data for {symbol}: {e}")
         return None
 
-# Trendlines (unchanged)
+# Trendlines
 def find_pivot_points(series, length, left_length):
     pivots_high = pd.Series(index=series.index, dtype=float)
     pivots_low = pd.Series(index=series.index, dtype=float)
@@ -96,65 +95,59 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
-# Plotting with candlesticks and trendlines
+# Plotting with candlesticks, close price, and trendlines
 def create_chart(df, primary_high_trendlines, primary_low_trendlines,
                 secondary_high_trendlines, secondary_low_trendlines, symbol):
-    if df.empty:
-        return None
+    # Prepare data for mplfinance
+    df_plot = df.set_index('timestamp')
+    df_plot = df_plot[['open', 'high', 'low', 'close']]
+    df_plot.columns = ['Open', 'High', 'Low', 'Close']
     
-    # Prepare data for candlestick plot
-    mpf_data = df.set_index('timestamp')[['Open', 'High', 'Low', 'Close']]
-    
-    # Create market colors and style
+    # Create custom market colors and style
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
     s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
     
-    # Prepare trendline plots for mplfinance
-    trendline_plots = []
+    # Prepare trendline plots
+    add_plots = [
+        mpf.make_addplot(df['close'], color='blue', width=1, label='Close Price')
+    ]
     
-    # Primary trendlines
+    # Add primary trendlines
     for tl in primary_high_trendlines + primary_low_trendlines:
         color = '#cf0a83' if tl['slope'] < 0 else '#027521'
-        x = [tl['x1'], tl['x2']]
-        y = [tl['y1'], tl['y2']]
-        trendline_plots.append(mpf.make_addplot(pd.Series(y, index=x), color=color, width=2))
+        trend_data = pd.Series(index=[tl['x1'], tl['x2']], data=[tl['y1'], tl['y2']])
+        add_plots.append(mpf.make_addplot(trend_data, color=color, width=2))
     
-    # Secondary trendlines
+    # Add secondary trendlines
     for tl in secondary_high_trendlines + secondary_low_trendlines:
         color = 'red' if tl['slope'] < 0 else 'green'
-        x = [tl['x1'], tl['x2']]
-        y = [tl['y1'], tl['y2']]
-        trendline_plots.append(mpf.make_addplot(pd.Series(y, index=x), color=color, linestyle='--', width=1))
-    
-    # Add close price line
-    close_price = df['Close']
-    trendline_plots.append(mpf.make_addplot(close_price, color='blue', width=1, label='Close Price'))
+        trend_data = pd.Series(index=[tl['x1'], tl['x2']], data=[tl['y1'], tl['y2']])
+        add_plots.append(mpf.make_addplot(trend_data, color=color, linestyle='--', width=1))
     
     # Create the plot
     fig, axlist = mpf.plot(
-        mpf_data,
-        figratio=(15, 10),
+        df_plot,
         type='candle',
         style=s,
-        tight_layout=True,
-        datetime_format='%Y-%m-%d',
-        ylabel='Price ($)',
-        title=f'{symbol} {TIMEFRAME} - Price with Trendlines',
-        addplot=trendline_plots,
+        figratio=(15, 10),
+        addplot=add_plots,
+        title=f'{symbol} {TIMEFRAME} - Price and Trendlines',
+        ylabel='Price',
         returnfig=True
     )
     
-    # Save to buffer
-    buf = BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight')
-    buf.seek(0)
+    ax = axlist[0]
+    ax.legend()
+    
+    # Save the plot
+    plt.savefig(f'price_analysis_{symbol}.png', bbox_inches='tight')
     plt.close(fig)
-    return buf
 
 # Send to Telegram
-async def send_to_telegram(symbol, buffer):
+async def send_to_telegram(symbol):
     bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=buffer)
+    with open(f'price_analysis_{symbol}.png', 'rb') as photo:
+        await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=photo)
 
 # Main execution for multiple symbols
 def analyze_symbol(symbol):
@@ -163,23 +156,23 @@ def analyze_symbol(symbol):
     if df is None or df.empty:
         return
     
-    price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-    price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+    price_high_pivots, price_low_pivots = find_pivot_points(df['close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+    price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
     
     primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
     primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
     secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     
-    chart_buffer = create_chart(df, primary_high_trendlines, primary_low_trendlines,
-                              secondary_high_trendlines, secondary_low_trendlines, symbol)
+    create_chart(df, primary_high_trendlines, primary_low_trendlines,
+                 secondary_high_trendlines, secondary_low_trendlines, symbol)
     
-    if chart_buffer:
-        asyncio.run(send_to_telegram(symbol, chart_buffer))
+    asyncio.run(send_to_telegram(symbol))
 
 def main():
     # Limit to top N symbols or specific symbols if desired
     symbols_to_analyze = SELECTED_SYMBOLS[:50]  # Example: analyze first 50 symbols
+    # Or specify specific symbols: symbols_to_analyze = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
     
     for symbol in symbols_to_analyze:
         try:

@@ -18,12 +18,12 @@ RSI_LENGTH = 9
 INNER_MULT = 1.0
 BB_LENGTH = 38
 BB_MULTIPLIER = 2.0
-PRIMARY_TRENDLINE_LENGTH = 20
-SECONDARY_TRENDLINE_LENGTH = 10
+PRIMARY_TRENDLINE_LENGTH = 5
+SECONDARY_TRENDLINE_LENGTH = 5
 MAX_TRENDLINES = 5  # New parameter to limit trendlines
 
 # Get BTCUSDT 15m data
-def get_ohlcv(symbol='BTCUSDT', timeframe='15m', limit=200):
+def get_ohlcv(symbol='BTCUSDT', timeframe='4h', limit=50):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')

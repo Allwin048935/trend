@@ -1,0 +1,151 @@
+import ccxt
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime
+import telegram
+from config import BINANCE_API_KEY, BINANCE_API_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+
+# [Previous unchanged code remains the same until find_pivot_points function]
+
+# Modified to use price instead of RSI
+def find_pivot_points(series, length, left_length):
+    pivots_high = pd.Series(index=series.index, dtype=float)
+    pivots_low = pd.Series(index=series.index, dtype=float)
+    
+    for i in range(left_length, len(series) - left_length):
+        if series.iloc[i] == max(series.iloc[i-left_length:i+left_length+1]):
+            pivots_high.iloc[i] = series.iloc[i]
+        if series.iloc[i] == min(series.iloc[i-left_length:i+left_length+1]):
+            pivots_low.iloc[i] = series.iloc[i]
+    
+    return pivots_high, pivots_low
+
+def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLINES):
+    trendlines = []
+    pivot_points = pivots.dropna()
+    if len(pivot_points) < 2:
+        return trendlines
+    
+    timestamps = df['timestamp']
+    last_timestamp = timestamps.iloc[-1]
+    
+    for i in range(1, len(pivot_points)):
+        idx1 = pivot_points.index[i-1]
+        idx2 = pivot_points.index[i]
+        
+        x1 = timestamps.loc[idx1]
+        x2 = timestamps.loc[idx2]
+        y1 = pivot_points.iloc[i-1]  # Now using price values
+        y2 = pivot_points.iloc[i]    # Now using price values
+        
+        time_diff = (x2 - x1).total_seconds() / 3600
+        slope = (y2 - y1) / time_diff if time_diff != 0 else 0
+        
+        x_end = min(timestamps.iloc[-1] + pd.Timedelta(minutes=15 * extension), last_timestamp)
+        extension_time = (x_end - x2).total_seconds() / 3600
+        y_end = y2 + slope * extension_time
+        
+        trendlines.append({
+            'x1': x1, 'y1': y1,
+            'x2': x_end, 'y2': y_end,
+            'slope': slope
+        })
+    
+    return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
+
+# [RSI Divergence function remains unchanged]
+
+# Modified plotting function
+def create_chart(df, rsi, rsi_channel, 
+                primary_high_trendlines, primary_low_trendlines,
+                secondary_high_trendlines, secondary_low_trendlines, divergences):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), height_ratios=[2, 1], sharex=True)
+    
+    # Price chart with trendlines
+    ax1.plot(df['timestamp'], df['close'], label='Price', color='blue')
+    
+    # Plot trendlines on price chart
+    for tl in primary_high_trendlines + primary_low_trendlines:
+        color = '#cf0a83' if tl['slope'] < 0 else '#027521'
+        ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linewidth=2)
+    for tl in secondary_high_trendlines + secondary_low_trendlines:
+        color = 'red' if tl['slope'] < 0 else 'green'
+        ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linestyle='--', linewidth=1)
+    
+    # Plot divergences on price chart
+    for div_type, idx in divergences:
+        color = 'green' if div_type == 'bullish' else 'red'
+        ax1.plot([df['timestamp'].iloc[idx-1], df['timestamp'].iloc[idx+1]], 
+                [df['close'].iloc[idx-1], df['close'].iloc[idx+1]], 
+                color=color, linestyle='--', linewidth=2)
+    
+    ax1.set_title('BTCUSDT 15m - Price and RSI')
+    ax1.set_ylabel('Price')
+    ax1.legend()
+    
+    # RSI chart (unchanged except removed trendlines)
+    valid_rsi = rsi.dropna()
+    valid_timestamps = df['timestamp'].loc[valid_rsi.index]
+    ax2.plot(valid_timestamps, valid_rsi, label='RSI', color='#A64D79')
+    ax2.axhline(y=60, color='blue', linestyle='--', alpha=0.3)
+    ax2.axhline(y=40, color='red', linestyle='--', alpha=0.3)
+    ax2.fill_between(valid_timestamps, 40, 60, color='#AB47BC', alpha=0.1)
+    
+    valid_rsi_channel = rsi_channel.dropna()
+    valid_channel_timestamps = df['timestamp'].loc[valid_rsi_channel.index]
+    upper_inner = 50 + INNER_MULT * valid_rsi_channel
+    lower_inner = 50 - INNER_MULT * valid_rsi_channel
+    ax2.plot(valid_channel_timestamps, upper_inner, color='#A64D79', alpha=0.3)
+    ax2.plot(valid_channel_timestamps, lower_inner, color='#A64D79', alpha=0.3)
+    ax2.fill_between(valid_channel_timestamps, lower_inner, upper_inner, color='#A64D79', alpha=0.1)
+    
+    # Plot divergences on RSI chart
+    for div_type, idx in divergences:
+        color = 'green' if div_type == 'bullish' else 'red'
+        ax2.plot([df['timestamp'].iloc[idx-1], df['timestamp'].iloc[idx+1]], 
+                [rsi.iloc[idx-1], rsi.iloc[idx+1]], 
+                color=color, linestyle='--', linewidth=2)
+    
+    ax2.set_ylabel('RSI')
+    ax2.legend()
+    
+    x_min = df['timestamp'].iloc[0]
+    x_max = df['timestamp'].iloc[-1]
+    ax1.set_xlim(x_min, x_max)
+    ax2.set_xlim(x_min, x_max)
+    
+    plt.tight_layout()
+    plt.savefig('rsi_analysis.png')
+    plt.close()
+
+# [send_to_telegram function remains unchanged]
+
+# Modified main function
+def main():
+    df = get_ohlcv()
+    
+    rsi = calculate_rsi(df)
+    rsi_channel = calculate_rsi_channel(rsi)
+    
+    # Calculate pivot points using close price instead of RSI
+    price_high_pivots, price_low_pivots = find_pivot_points(df['close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+    price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+    
+    primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+    primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+    secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
+    secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
+    
+    divergences = find_divergence(df['close'], rsi)
+    
+    create_chart(df, rsi, rsi_channel,
+                primary_high_trendlines # Modified trendlines parameters
+                primary_high_trendlines, primary_low_trendlines,
+                secondary_high_trendlines, secondary_low_trendlines, divergences)
+    
+    import asyncio
+    asyncio.run(send_to_telegram())
+
+if __name__ == "__main__":
+    main()

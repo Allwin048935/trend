@@ -45,7 +45,7 @@ def calculate_rsi_channel(rsi, length=RSI_LENGTH):
     rsi_change = rsi.diff().abs()
     return rsi_change.rolling(window=length).std()
 
-# Trendlines (based on price) - Corrected
+# Trendlines (based on price)
 def find_pivot_points(series, length, left_length):
     pivots_high = pd.Series(index=series.index, dtype=float)
     pivots_low = pd.Series(index=series.index, dtype=float)
@@ -104,7 +104,7 @@ def find_divergence(price, rsi):
             divergences.append(('bearish', i))
     return divergences
 
-# Plotting with Candlesticks
+# Plotting with Candlesticks - Corrected
 def create_chart(df, rsi, rsi_channel, 
                  primary_high_trendlines, primary_low_trendlines,
                  secondary_high_trendlines, secondary_low_trendlines, divergences):
@@ -117,32 +117,32 @@ def create_chart(df, rsi, rsi_channel,
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
     s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
 
-    # Prepare trendline plots
+    # Prepare trendline plots - Changed 'linewidth' to 'width'
     primary_high_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
                                           color='#cf0a83' if tl['slope'] < 0 else '#027521', 
-                                          linestyle='-', linewidth=2) 
+                                          linestyle='-', width=2) 
                           for tl in primary_high_trendlines]
     primary_low_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
                                          color='#cf0a83' if tl['slope'] < 0 else '#027521', 
-                                         linestyle='-', linewidth=2) 
+                                         linestyle='-', width=2) 
                          for tl in primary_low_trendlines]
     secondary_high_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
                                             color='red' if tl['slope'] < 0 else 'green', 
-                                            linestyle='--', linewidth=1) 
+                                            linestyle='--', width=1) 
                            for tl in secondary_high_trendlines]
     secondary_low_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
                                            color='red' if tl['slope'] < 0 else 'green', 
-                                           linestyle='--', linewidth=1) 
+                                           linestyle='--', width=1) 
                           for tl in secondary_low_trendlines]
 
-    # Prepare divergence plots
+    # Prepare divergence plots - Changed 'linewidth' to 'width'
     divergence_plots = []
     for div_type, idx in divergences:
         color = 'green' if div_type == 'bullish' else 'red'
         divergence_plots.append(mpf.make_addplot(
             pd.Series([df['close'].iloc[idx-1], df['close'].iloc[idx+1]], 
                       index=[df.index[idx-1], df.index[idx+1]]),
-            color=color, linestyle='--', linewidth=2
+            color=color, linestyle='--', width=2
         ))
 
     # RSI plot setup

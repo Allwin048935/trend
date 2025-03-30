@@ -16,14 +16,12 @@ exchange = ccxt.binance({
 # Parameters
 RSI_LENGTH = 9
 INNER_MULT = 1.0
-BB_LENGTH = 38
-BB_MULTIPLIER = 2.0
-PRIMARY_TRENDLINE_LENGTH = 25
-SECONDARY_TRENDLINE_LENGTH = 25
-MAX_TRENDLINES = 5  # New parameter to limit trendlines
+PRIMARY_TRENDLINE_LENGTH = 20
+SECONDARY_TRENDLINE_LENGTH = 10
+MAX_TRENDLINES = 3
 
 # Get BTCUSDT 15m data
-def get_ohlcv(symbol='BTCUSDT', timeframe='1h', limit=150):
+def get_ohlcv(symbol='BTCUSDT', timeframe='15m', limit=200):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -44,28 +42,7 @@ def calculate_rsi_channel(rsi, length=RSI_LENGTH):
     rsi_change = rsi.diff().abs()
     return rsi_change.rolling(window=length).std()
 
-# Bollinger Bands S/R
-def calculate_bollinger_bands(df, length=BB_LENGTH, multiplier=BB_MULTIPLIER):
-    sma = df['close'].rolling(window=length).mean()
-    std = df['close'].rolling(window=length).std()
-    upper = sma + (multiplier * std)
-    lower = sma - (multiplier * std)
-    bbr = (df['close'] - lower) / (upper - lower)
-    return sma, upper, lower, bbr
-
-def find_sr_zones(df, bbr):
-    resistance = pd.Series(index=df.index, dtype=float)
-    support = pd.Series(index=df.index, dtype=float)
-    
-    for i in range(1, len(df)):
-        if bbr.iloc[i-1] > 1 and bbr.iloc[i] < 1:
-            resistance.iloc[i-1] = df['high'].iloc[i-1]
-        if bbr.iloc[i-1] < 0 and bbr.iloc[i] > 0:
-            support.iloc[i-1] = df['low'].iloc[i-1]
-    
-    return resistance, support
-
-# Trendlines
+# Trendlines (based on RSI)
 def find_pivot_points(series, length, left_length):
     pivots_high = pd.Series(index=series.index, dtype=float)
     pivots_low = pd.Series(index=series.index, dtype=float)
@@ -85,6 +62,7 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
         return trendlines
     
     timestamps = df['timestamp']
+    last_timestamp = timestamps.iloc[-1]  # Limit extension to last price timestamp
     
     for i in range(1, len(pivot_points)):
         idx1 = pivot_points.index[i-1]
@@ -98,7 +76,8 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
         time_diff = (x2 - x1).total_seconds() / 3600
         slope = (y2 - y1) / time_diff if time_diff != 0 else 0
         
-        x_end = timestamps.iloc[-1] + pd.Timedelta(minutes=15 * extension)
+        # Limit extension to the last price timestamp
+        x_end = min(timestamps.iloc[-1] + pd.Timedelta(minutes=15 * extension), last_timestamp)
         extension_time = (x_end - x2).total_seconds() / 3600
         y_end = y2 + slope * extension_time
         
@@ -108,7 +87,6 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
             'slope': slope
         })
     
-    # Return only the last max_lines trendlines
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
 # RSI Divergence
@@ -124,53 +102,64 @@ def find_divergence(price, rsi):
     return divergences
 
 # Plotting
-def create_chart(df, rsi, rsi_channel, bb_sma, bb_upper, bb_lower, resistance, support, 
+def create_chart(df, rsi, rsi_channel, 
                 primary_high_trendlines, primary_low_trendlines,
                 secondary_high_trendlines, secondary_low_trendlines, divergences):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), height_ratios=[2, 1])
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), height_ratios=[2, 1], sharex=True)
     
     # Price chart
     ax1.plot(df['timestamp'], df['close'], label='Price', color='blue')
-    ax1.plot(df['timestamp'], bb_sma, label='BB SMA', color='orange', alpha=0.5)
-    ax1.plot(df['timestamp'], bb_upper, label='BB Upper', color='gray', alpha=0.3)
-    ax1.plot(df['timestamp'], bb_lower, label='BB Lower', color='gray', alpha=0.3)
     
-    ax1.scatter(df['timestamp'], resistance, color='#d904c4', marker='o', label='Resistance')
-    ax1.scatter(df['timestamp'], support, color='#0959e3', marker='o', label='Support')
-    
-    for tl in primary_high_trendlines + primary_low_trendlines:
-        color = '#cf0a83' if tl['slope'] < 0 else '#027521'
-        ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linewidth=2)
-    for tl in secondary_high_trendlines + secondary_low_trendlines:
-        color = 'red' if tl['slope'] < 0 else 'green'
-        ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linestyle='--', linewidth=1)
-    
-    ax1.set_title('BTCUSDT 15m - Price with Indicators')
-    ax1.legend()
-    
-    # RSI chart
-    ax2.plot(df['timestamp'], rsi, label='RSI', color='#A64D79')
-    ax2.axhline(y=60, color='blue', linestyle='--', alpha=0.3)
-    ax2.axhline(y=40, color='red', linestyle='--', alpha=0.3)
-    ax2.fill_between(df['timestamp'], 40, 60, color='#AB47BC', alpha=0.1)
-    
-    upper_inner = 50 + INNER_MULT * rsi_channel
-    lower_inner = 50 - INNER_MULT * rsi_channel
-    ax2.plot(df['timestamp'], upper_inner, color='#A64D79', alpha=0.3)
-    ax2.plot(df['timestamp'], lower_inner, color='#A64D79', alpha=0.3)
-    ax2.fill_between(df['timestamp'], lower_inner, upper_inner, color='#A64D79', alpha=0.1)
-    
+    # Plot divergences on price chart
     for div_type, idx in divergences:
         color = 'green' if div_type == 'bullish' else 'red'
         ax1.plot([df['timestamp'].iloc[idx-1], df['timestamp'].iloc[idx+1]], 
                 [df['close'].iloc[idx-1], df['close'].iloc[idx+1]], 
                 color=color, linestyle='--', linewidth=2)
+    
+    ax1.set_title('BTCUSDT 15m - Price and RSI')
+    ax1.set_ylabel('Price')
+    ax1.legend()
+    
+    # RSI chart
+    valid_rsi = rsi.dropna()  # Remove NaN values to align with price
+    valid_timestamps = df['timestamp'].loc[valid_rsi.index]
+    ax2.plot(valid_timestamps, valid_rsi, label='RSI', color='#A64D79')
+    ax2.axhline(y=60, color='blue', linestyle='--', alpha=0.3)
+    ax2.axhline(y=40, color='red', linestyle='--', alpha=0.3)
+    ax2.fill_between(valid_timestamps, 40, 60, color='#AB47BC', alpha=0.1)
+    
+    valid_rsi_channel = rsi_channel.dropna()
+    valid_channel_timestamps = df['timestamp'].loc[valid_rsi_channel.index]
+    upper_inner = 50 + INNER_MULT * valid_rsi_channel
+    lower_inner = 50 - INNER_MULT * valid_rsi_channel
+    ax2.plot(valid_channel_timestamps, upper_inner, color='#A64D79', alpha=0.3)
+    ax2.plot(valid_channel_timestamps, lower_inner, color='#A64D79', alpha=0.3)
+    ax2.fill_between(valid_channel_timestamps, lower_inner, upper_inner, color='#A64D79', alpha=0.1)
+    
+    # Plot trendlines on RSI chart
+    for tl in primary_high_trendlines + primary_low_trendlines:
+        color = '#cf0a83' if tl['slope'] < 0 else '#027521'
+        ax2.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linewidth=2)
+    for tl in secondary_high_trendlines + secondary_low_trendlines:
+        color = 'red' if tl['slope'] < 0 else 'green'
+        ax2.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linestyle='--', linewidth=1)
+    
+    # Plot divergences on RSI chart
+    for div_type, idx in divergences:
+        color = 'green' if div_type == 'bullish' else 'red'
         ax2.plot([df['timestamp'].iloc[idx-1], df['timestamp'].iloc[idx+1]], 
                 [rsi.iloc[idx-1], rsi.iloc[idx+1]], 
                 color=color, linestyle='--', linewidth=2)
     
     ax2.set_ylabel('RSI')
     ax2.legend()
+    
+    # Set same x-axis limits for both plots
+    x_min = df['timestamp'].iloc[0]
+    x_max = df['timestamp'].iloc[-1]
+    ax1.set_xlim(x_min, x_max)
+    ax2.set_xlim(x_min, x_max)
     
     plt.tight_layout()
     plt.savefig('rsi_analysis.png')
@@ -188,23 +177,18 @@ def main():
     
     rsi = calculate_rsi(df)
     rsi_channel = calculate_rsi_channel(rsi)
-    bb_sma, bb_upper, bb_lower, bbr = calculate_bollinger_bands(df)
-    resistance, support = find_sr_zones(df, bbr)
     
-    price_high = df[['close', 'open']].max(axis=1)
-    price_low = df[['close', 'open']].min(axis=1)
+    rsi_high_pivots, rsi_low_pivots = find_pivot_points(rsi, PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+    rsi_sec_high_pivots, rsi_sec_low_pivots = find_pivot_points(rsi, SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
     
-    primary_high_pivots, primary_low_pivots = find_pivot_points(price_high, PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-    secondary_high_pivots, secondary_low_pivots = find_pivot_points(price_high, SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-    
-    primary_high_trendlines = calculate_trendlines(df, primary_high_pivots, PRIMARY_TRENDLINE_LENGTH)
-    primary_low_trendlines = calculate_trendlines(df, primary_low_pivots, PRIMARY_TRENDLINE_LENGTH)
-    secondary_high_trendlines = calculate_trendlines(df, secondary_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
-    secondary_low_trendlines = calculate_trendlines(df, secondary_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
+    primary_high_trendlines = calculate_trendlines(df, rsi_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+    primary_low_trendlines = calculate_trendlines(df, rsi_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+    secondary_high_trendlines = calculate_trendlines(df, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
+    secondary_low_trendlines = calculate_trendlines(df, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     
     divergences = find_divergence(df['close'], rsi)
     
-    create_chart(df, rsi, rsi_channel, bb_sma, bb_upper, bb_lower, resistance, support,
+    create_chart(df, rsi, rsi_channel,
                 primary_high_trendlines, primary_low_trendlines,
                 secondary_high_trendlines, secondary_low_trendlines, divergences)
     

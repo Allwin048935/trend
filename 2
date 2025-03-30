@@ -77,7 +77,7 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
-# Plotting with Candlesticks
+# Plotting with Candlesticks - Corrected
 def create_chart(df, primary_high_trendlines, primary_low_trendlines,
                  secondary_high_trendlines, secondary_low_trendlines):
     # Prepare candlestick data
@@ -89,17 +89,21 @@ def create_chart(df, primary_high_trendlines, primary_low_trendlines,
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
     s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
 
+    # Function to find the closest index in df.index to a given timestamp
+    def find_closest_index(df_index, timestamp):
+        return (df_index - timestamp).abs().argmin()
+
     # Function to create full-length trendline series
     def create_trendline_series(df, tl):
         """Interpolate trendline based on close price values across full data range."""
         series = pd.Series(index=df.index, dtype=float)  # Full length of df
-        start_idx = df.index.get_loc(tl['x1'], method='nearest')
-        end_idx = df.index.get_loc(tl['x2'], method='nearest')
+        start_idx = find_closest_index(df.index, tl['x1'])
+        end_idx = find_closest_index(df.index, tl['x2'])
         if start_idx == end_idx:  # Avoid division by zero
             return series  # Return empty series if no range
         x_range = end_idx - start_idx
         slope = (tl['y2'] - tl['y1']) / x_range if x_range != 0 else 0
-        for i in range(start_idx, end_idx + 1):
+        for i in range(min(start_idx, end_idx), max(start_idx, end_idx) + 1):
             series.iloc[i] = tl['y1'] + slope * (i - start_idx)
         return series
 
@@ -122,7 +126,7 @@ def create_chart(df, primary_high_trendlines, primary_low_trendlines,
                           for tl in secondary_low_trendlines]
 
     # Combine all additional plots
-    add_plots = (primary_high_plots + primary_low_plots + secondary_high_plots + secondary_low_trendlines)
+    add_plots = (primary_high_plots + primary_low_plots + secondary_high_plots + secondary_low_plots)
 
     # Plot using mplfinance - Single panel for candlesticks
     mpf.plot(

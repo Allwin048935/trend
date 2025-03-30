@@ -117,7 +117,7 @@ def create_chart(df, rsi, rsi_channel,
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
     s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
 
-    # Prepare trendline plots - Changed 'linewidth' to 'width'
+    # Prepare trendline plots
     primary_high_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
                                           color='#cf0a83' if tl['slope'] < 0 else '#027521', 
                                           linestyle='-', width=2) 
@@ -135,11 +135,11 @@ def create_chart(df, rsi, rsi_channel,
                                            linestyle='--', width=1) 
                           for tl in secondary_low_trendlines]
 
-    # Prepare divergence plots - Changed 'linewidth' to 'width'
+    # Prepare divergence plots
     divergence_plots = []
     for div_type, idx in divergences:
         color = 'green' if div_type == 'bullish' else 'red'
-        divergence_plots.append(mpf.make_addplot(
+        divergence_plots.append(mpl.make_addplot(
             pd.Series([df['close'].iloc[idx-1], df['close'].iloc[idx+1]], 
                       index=[df.index[idx-1], df.index[idx+1]]),
             color=color, linestyle='--', width=2
@@ -152,9 +152,16 @@ def create_chart(df, rsi, rsi_channel,
     upper_inner_plot = mpf.make_addplot(upper_inner, panel=1, color='#A64D79', alpha=0.3)
     lower_inner_plot = mpf.make_addplot(lower_inner, panel=1, color='#A64D79', alpha=0.3)
 
+    # Add horizontal lines for RSI panel (40 and 60)
+    rsi_hline_60 = mpf.make_addplot(pd.Series([60] * len(df), index=df.index), 
+                                   panel=1, color='blue', linestyle='--', alpha=0.3, width=1)
+    rsi_hline_40 = mpf.make_addplot(pd.Series([40] * len(df), index=df.index), 
+                                   panel=1, color='red', linestyle='--', alpha=0.3, width=1)
+
     # Combine all additional plots
     add_plots = (primary_high_plots + primary_low_plots + secondary_high_plots + secondary_low_plots +
-                 divergence_plots + [rsi_plot, upper_inner_plot, lower_inner_plot])
+                 divergence_plots + [rsi_plot, upper_inner_plot, lower_inner_plot, 
+                                     rsi_hline_60, rsi_hline_40])
 
     # Plot using mplfinance
     mpf.plot(
@@ -170,8 +177,6 @@ def create_chart(df, rsi, rsi_channel,
         fill_between=dict(y1=lower_inner.values, y2=upper_inner.values, 
                          where=(lower_inner.notna() & upper_inner.notna()), 
                          alpha=0.1, color='#A64D79', panel=1),
-        hlines=[{'h': 60, 'color': 'blue', 'linestyle': '--', 'alpha': 0.3, 'panel': 1},
-                {'h': 40, 'color': 'red', 'linestyle': '--', 'alpha': 0.3, 'panel': 1}],
         title='BTCUSDT 15m - Price and RSI'
     )
 

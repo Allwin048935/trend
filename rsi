@@ -23,7 +23,7 @@ SECONDARY_TRENDLINE_LENGTH = 25
 MAX_TRENDLINES = 5  # New parameter to limit trendlines
 
 # Get BTCUSDT 15m data
-def get_ohlcv(symbol='BTCUSDT', timeframe='4h', limit=50):
+def get_ohlcv(symbol='BTCUSDT', timeframe='1h', limit=150):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')

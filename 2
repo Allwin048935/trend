@@ -95,7 +95,7 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
-# Plotting with candlesticks, close price, and trendlines
+# Plotting with candlesticks and trendlines (no close price line plotted)
 def create_chart(df, primary_high_trendlines, primary_low_trendlines,
                 secondary_high_trendlines, secondary_low_trendlines, symbol):
     # Prepare data for mplfinance
@@ -107,10 +107,8 @@ def create_chart(df, primary_high_trendlines, primary_low_trendlines,
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
     s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
     
-    # Prepare add plots
-    add_plots = [
-        mpf.make_addplot(df['close'], color='blue', width=1, label='Close Price')
-    ]
+    # Prepare add plots (no close price included)
+    add_plots = []
     
     # Function to convert trendline to full-length series
     def trendline_to_series(df, tl):
@@ -154,7 +152,7 @@ def create_chart(df, primary_high_trendlines, primary_low_trendlines,
     )
     
     ax = axlist[0]
-    ax.legend()
+    # No legend needed since close price isn't plotted
     
     # Save the plot
     plt.savefig(f'price_analysis_{symbol}.png', bbox_inches='tight')

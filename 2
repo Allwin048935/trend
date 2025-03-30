@@ -18,11 +18,11 @@ exchange = ccxt.binance({
 # Parameters
 RSI_LENGTH = 9
 INNER_MULT = 1.0
-PRIMARY_TRENDLINE_LENGTH = 20
-SECONDARY_TRENDLINE_LENGTH = 15
+PRIMARY_TRENDLINE_LENGTH = 10
+SECONDARY_TRENDLINE_LENGTH = 5
 MAX_TRENDLINES = 2
-TIMEFRAME = '1d'
-LIMIT = 50
+TIMEFRAME = '8h'
+LIMIT = 100
 
 # Fetch selected symbols dynamically from Binance
 url = "https://fapi.binance.com/fapi/v1/exchangeInfo"

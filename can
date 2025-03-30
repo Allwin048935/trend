@@ -6,9 +6,43 @@ from datetime import datetime
 import telegram
 from config import BINANCE_API_KEY, BINANCE_API_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
-# [Previous unchanged code remains the same until find_pivot_points function]
+# Initialize Binance exchange
+exchange = ccxt.binance({
+    'apiKey': BINANCE_API_KEY,
+    'secret': BINANCE_API_SECRET,
+    'enableRateLimit': True,
+})
 
-# Modified to use price instead of RSI
+# Parameters
+RSI_LENGTH = 9
+INNER_MULT = 1.0
+PRIMARY_TRENDLINE_LENGTH = 20
+SECONDARY_TRENDLINE_LENGTH = 10
+MAX_TRENDLINES = 3
+
+# Get BTCUSDT 15m data
+def get_ohlcv(symbol='BTCUSDT', timeframe='1h', limit=100):
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return df
+
+# RSI calculation
+def calculate_rsi(df, length=RSI_LENGTH):
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=length).mean()
+    avg_loss = loss.rolling(window=length).mean()
+    rs = avg_gain / avg_loss
+    rsi = 50 + 50 * rs / (1 + rs)
+    return rsi
+
+def calculate_rsi_channel(rsi, length=RSI_LENGTH):
+    rsi_change = rsi.diff().abs()
+    return rsi_change.rolling(window=length).std()
+
+# Trendlines (based on price)
 def find_pivot_points(series, length, left_length):
     pivots_high = pd.Series(index=series.index, dtype=float)
     pivots_low = pd.Series(index=series.index, dtype=float)
@@ -36,8 +70,8 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
         
         x1 = timestamps.loc[idx1]
         x2 = timestamps.loc[idx2]
-        y1 = pivot_points.iloc[i-1]  # Now using price values
-        y2 = pivot_points.iloc[i]    # Now using price values
+        y1 = pivot_points.iloc[i-1]  # Using price values
+        y2 = pivot_points.iloc[i]    # Using price values
         
         time_diff = (x2 - x1).total_seconds() / 3600
         slope = (y2 - y1) / time_diff if time_diff != 0 else 0
@@ -54,9 +88,19 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
-# [RSI Divergence function remains unchanged]
+# RSI Divergence
+def find_divergence(price, rsi):
+    divergences = []
+    for i in range(2, len(price)-1):
+        if (price.iloc[i] < price.iloc[i-1] and rsi.iloc[i] > rsi.iloc[i-1] and 
+            price.iloc[i] < price.iloc[i+1] and rsi.iloc[i] > rsi.iloc[i+1]):
+            divergences.append(('bullish', i))
+        if (price.iloc[i] > price.iloc[i-1] and rsi.iloc[i] < rsi.iloc[i-1] and 
+            price.iloc[i] > price.iloc[i+1] and rsi.iloc[i] < rsi.iloc[i+1]):
+            divergences.append(('bearish', i))
+    return divergences
 
-# Modified plotting function
+# Plotting
 def create_chart(df, rsi, rsi_channel, 
                 primary_high_trendlines, primary_low_trendlines,
                 secondary_high_trendlines, secondary_low_trendlines, divergences):
@@ -84,7 +128,7 @@ def create_chart(df, rsi, rsi_channel,
     ax1.set_ylabel('Price')
     ax1.legend()
     
-    # RSI chart (unchanged except removed trendlines)
+    # RSI chart
     valid_rsi = rsi.dropna()
     valid_timestamps = df['timestamp'].loc[valid_rsi.index]
     ax2.plot(valid_timestamps, valid_rsi, label='RSI', color='#A64D79')
@@ -119,9 +163,13 @@ def create_chart(df, rsi, rsi_channel,
     plt.savefig('rsi_analysis.png')
     plt.close()
 
-# [send_to_telegram function remains unchanged]
+# Send to Telegram
+async def send_to_telegram():
+    bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+    with open('rsi_analysis.png', 'rb') as photo:
+        await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=photo)
 
-# Modified main function
+# Main execution
 def main():
     df = get_ohlcv()
     
@@ -140,9 +188,8 @@ def main():
     divergences = find_divergence(df['close'], rsi)
     
     create_chart(df, rsi, rsi_channel,
-                primary_high_trendlines # Modified trendlines parameters
-                primary_high_trendlines, primary_low_trendlines,
-                secondary_high_trendlines, secondary_low_trendlines, divergences)
+                 primary_high_trendlines, primary_low_trendlines,
+                 secondary_high_trendlines, secondary_low_trendlines, divergences)
     
     import asyncio
     asyncio.run(send_to_telegram())

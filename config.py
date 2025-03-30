@@ -1,4 +1,4 @@
-BINANCE_API_KEY = 'your_binance_api_key'
-BINANCE_API_SECRET = 'your_binance_api_secret'
-TELEGRAM_BOT_TOKEN = 'your_telegram_bot_token'
-TELEGRAM_CHAT_ID = 'your_telegram_chat_id'
+BINANCE_API_KEY = '"SvvG1ooYWYpLEZnSMoMbO2qN246CfnCFvB87sVOISg6KPkukq07BpmkqWfWC62yT'
+BINANCE_API_SECRET = 'RhAuSUL6iipT1o1yA9yDTdZoRTdqcLM2KSPYxtvrLMBmGlY8KeljnaNoPfFfhltf'
+TELEGRAM_BOT_TOKEN = '7619077339:AAGvLzsABJRFKsv50TgI1XxMNhVvtED-E_4'
+TELEGRAM_CHAT_ID = '1385370555'

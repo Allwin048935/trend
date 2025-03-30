@@ -1,6 +1,169 @@
-TELEGRAM_TOKEN_EXITE = '7291265041:AAHAsg1hnD1fe4eINhfd-86425ReI04lYJY'
-TELEGRAM_CHAT_ID = '1385370555'
-TELEGRAM_TOKEN_EXIT = '7619077339:AAGvLzsABJRFKsv50TgI1XxMNhVvtED-E_4'
+import ccxt
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime
+import telegram
+import mplfinance as mpf
 
-BINANCE_API_KEY = 'SvvG1ooYWYpLEZnSMoMbO2qN246CfnCFvB87sVOISg6KPkukq07BpmkqWfWC62yT'
-BINANCE_API_SECRET = 'RhAuSUL6iipT1o1yA9yDTdZoRTdqcLM2KSPYxtvrLMBmGlY8KeljnaNoPfFfhltf'
+from config import BINANCE_API_KEY, BINANCE_API_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+
+# Initialize Binance exchange
+exchange = ccxt.binance({
+    'apiKey': BINANCE_API_KEY,
+    'secret': BINANCE_API_SECRET,
+    'enableRateLimit': True,
+})
+
+# Parameters
+PRIMARY_TRENDLINE_LENGTH = 20
+SECONDARY_TRENDLINE_LENGTH = 10
+MAX_TRENDLINES = 3
+
+# Get BTCUSDT 15m data
+def get_ohlcv(symbol='BTCUSDT', timeframe='1h', limit=100):
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df.set_index('timestamp', inplace=True)  # Set timestamp as index for mplfinance
+    return df
+
+# Trendlines (all based on close price)
+def find_pivot_points(series, length, left_length):
+    """Find pivot points (highs and lows) based on the input series (close price)."""
+    pivots_high = pd.Series(index=series.index, dtype=float)
+    pivots_low = pd.Series(index=series.index, dtype=float)
+    
+    for i in range(left_length, len(series) - left_length):
+        if series.iloc[i] == max(series.iloc[i-left_length:i+left_length+1]):
+            pivots_high.iloc[i] = series.iloc[i]
+        if series.iloc[i] == min(series.iloc[i-left_length:i+left_length+1]):
+            pivots_low.iloc[i] = series.iloc[i]
+    
+    return pivots_high, pivots_low
+
+def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLINES):
+    """Calculate trendlines based on pivot points derived from close price."""
+    trendlines = []
+    pivot_points = pivots.dropna()
+    if len(pivot_points) < 2:
+        return trendlines
+    
+    timestamps = df.index  # This is a DatetimeIndex
+    last_timestamp = timestamps[-1]
+    
+    for i in range(1, len(pivot_points)):
+        idx1 = pivot_points.index[i-1]  # Timestamp from pivot points
+        idx2 = pivot_points.index[i]    # Timestamp from pivot points
+        
+        # Get the timestamps directly from the index
+        x1 = idx1  # Already a datetime
+        x2 = idx2  # Already a datetime
+        y1 = pivot_points.iloc[i-1]  # Close price value
+        y2 = pivot_points.iloc[i]    # Close price value
+        
+        time_diff = (x2 - x1).total_seconds() / 3600
+        slope = (y2 - y1) / time_diff if time_diff != 0 else 0
+        
+        x_end = min(timestamps[-1] + pd.Timedelta(minutes=15 * extension), last_timestamp)
+        extension_time = (x_end - x2).total_seconds() / 3600
+        y_end = y2 + slope * extension_time
+        
+        trendlines.append({
+            'x1': x1, 'y1': y1,
+            'x2': x_end, 'y2': y_end,
+            'slope': slope
+        })
+    
+    return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
+
+# Plotting with Candlesticks
+def create_chart(df, primary_high_trendlines, primary_low_trendlines,
+                 secondary_high_trendlines, secondary_low_trendlines):
+    # Prepare candlestick data
+    mpf_data = df[['open', 'high', 'low', 'close']].rename(columns={
+        'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'
+    })
+
+    # Create custom market colors and style
+    mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
+    s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
+
+    # Function to create full-length trendline series
+    def create_trendline_series(df, tl):
+        """Interpolate trendline based on close price values across full data range."""
+        series = pd.Series(index=df.index, dtype=float)  # Full length of df
+        start_idx = df.index.get_loc(tl['x1'], method='nearest')
+        end_idx = df.index.get_loc(tl['x2'], method='nearest')
+        if start_idx == end_idx:  # Avoid division by zero
+            return series  # Return empty series if no range
+        x_range = end_idx - start_idx
+        slope = (tl['y2'] - tl['y1']) / x_range if x_range != 0 else 0
+        for i in range(start_idx, end_idx + 1):
+            series.iloc[i] = tl['y1'] + slope * (i - start_idx)
+        return series
+
+    # Prepare trendline plots (all based on close price pivots)
+    primary_high_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
+                                          color='#cf0a83' if tl['slope'] < 0 else '#027521', 
+                                          linestyle='-', width=2) 
+                          for tl in primary_high_trendlines]
+    primary_low_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
+                                         color='#cf0a83' if tl['slope'] < 0 else '#027521', 
+                                         linestyle='-', width=2) 
+                         for tl in primary_low_trendlines]
+    secondary_high_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
+                                            color='red' if tl['slope'] < 0 else 'green', 
+                                            linestyle='--', width=1) 
+                           for tl in secondary_high_trendlines]
+    secondary_low_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
+                                           color='red' if tl['slope'] < 0 else 'green', 
+                                           linestyle='--', width=1) 
+                          for tl in secondary_low_trendlines]
+
+    # Combine all additional plots
+    add_plots = (primary_high_plots + primary_low_plots + secondary_high_plots + secondary_low_trendlines)
+
+    # Plot using mplfinance - Single panel for candlesticks
+    mpf.plot(
+        mpf_data,
+        type='candle',
+        style=s,
+        figratio=(15, 10),
+        tight_layout=True,
+        datetime_format='%Y-%m-%d %H:%M',
+        ylabel='Price ($)',
+        addplot=add_plots,
+        title='BTCUSDT 15m - Candlestick Chart with Trendlines (Close Price)'
+    )
+
+    plt.savefig('chart_analysis.png', bbox_inches='tight')
+    plt.close()
+
+# Send to Telegram
+async def send_to_telegram():
+    bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+    with open('chart_analysis.png', 'rb') as photo:
+        await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=photo)
+
+# Main execution
+def main():
+    df = get_ohlcv()
+    
+    # Calculate pivot points using close price for all trendlines
+    price_high_pivots, price_low_pivots = find_pivot_points(df['close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+    price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+    
+    primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+    primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+    secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
+    secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
+    
+    create_chart(df, primary_high_trendlines, primary_low_trendlines,
+                 secondary_high_trendlines, secondary_low_trendlines)
+    
+    import asyncio
+    asyncio.run(send_to_telegram())
+
+if __name__ == "__main__":
+    main()

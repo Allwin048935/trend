@@ -80,16 +80,30 @@ def find_pivot_points(series, length, left_length):
 def calculate_trendlines(df, pivots, length, extension=50):
     trendlines = []
     pivot_points = pivots.dropna()
+    if len(pivot_points) < 2:
+        return trendlines
+    
+    timestamps = df['timestamp']
     
     for i in range(1, len(pivot_points)):
-        x1, y1 = df.index[pivot_points.index[i-1]], pivot_points.iloc[i-1]
-        x2, y2 = df.index[pivot_points.index[i]], pivot_points.iloc[i]
+        # Get the index positions of pivot points
+        idx1 = pivot_points.index[i-1]
+        idx2 = pivot_points.index[i]
         
-        slope = (y2 - y1) / ((x2 - x1).total_seconds() / 3600)  # Convert to hours
+        # Get corresponding timestamps and values
+        x1 = timestamps.loc[idx1]
+        x2 = timestamps.loc[idx2]
+        y1 = pivot_points.iloc[i-1]
+        y2 = pivot_points.iloc[i]
+        
+        # Calculate slope using datetime difference in hours
+        time_diff = (x2 - x1).total_seconds() / 3600  # Convert to hours
+        slope = (y2 - y1) / time_diff if time_diff != 0 else 0
         
         # Extend the trendline
-        x_end = df.index[-1] + pd.Timedelta(minutes=15*extension)
-        y_end = y2 + slope * ((x_end - x2).total_seconds() / 3600)
+        x_end = timestamps.iloc[-1] + pd.Timedelta(minutes=15 * extension)
+        extension_time = (x_end - x2).total_seconds() / 3600
+        y_end = y2 + slope * extension_time
         
         trendlines.append({
             'x1': x1, 'y1': y1,
@@ -103,11 +117,9 @@ def calculate_trendlines(df, pivots, length, extension=50):
 def find_divergence(price, rsi):
     divergences = []
     for i in range(2, len(price)-1):
-        # Bullish divergence
         if (price.iloc[i] < price.iloc[i-1] and rsi.iloc[i] > rsi.iloc[i-1] and 
             price.iloc[i] < price.iloc[i+1] and rsi.iloc[i] > rsi.iloc[i+1]):
             divergences.append(('bullish', i))
-        # Bearish divergence
         if (price.iloc[i] > price.iloc[i-1] and rsi.iloc[i] < rsi.iloc[i-1] and 
             price.iloc[i] > price.iloc[i+1] and rsi.iloc[i] < rsi.iloc[i+1]):
             divergences.append(('bearish', i))
@@ -125,21 +137,13 @@ def create_chart(df, rsi, rsi_channel, bb_sma, bb_upper, bb_lower, resistance, s
     ax1.plot(df['timestamp'], bb_upper, label='BB Upper', color='gray', alpha=0.3)
     ax1.plot(df['timestamp'], bb_lower, label='BB Lower', color='gray', alpha=0.3)
     
-    # Plot S/R zones
     ax1.scatter(df['timestamp'], resistance, color='#d904c4', marker='o', label='Resistance')
     ax1.scatter(df['timestamp'], support, color='#0959e3', marker='o', label='Support')
     
-    # Plot trendlines
-    for tl in primary_high_trendlines:
+    for tl in primary_high_trendlines + primary_low_trendlines:
         color = '#cf0a83' if tl['slope'] < 0 else '#027521'
         ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linewidth=2)
-    for tl in primary_low_trendlines:
-        color = '#cf0a83' if tl['slope'] < 0 else '#027521'
-        ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linewidth=2)
-    for tl in secondary_high_trendlines:
-        color = 'red' if tl['slope'] < 0 else 'green'
-        ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linestyle='--', linewidth=1)
-    for tl in secondary_low_trendlines:
+    for tl in secondary_high_trendlines + secondary_low_trendlines:
         color = 'red' if tl['slope'] < 0 else 'green'
         ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linestyle='--', linewidth=1)
     
@@ -152,14 +156,12 @@ def create_chart(df, rsi, rsi_channel, bb_sma, bb_upper, bb_lower, resistance, s
     ax2.axhline(y=40, color='red', linestyle='--', alpha=0.3)
     ax2.fill_between(df['timestamp'], 40, 60, color='#AB47BC', alpha=0.1)
     
-    # RSI inner bands
     upper_inner = 50 + INNER_MULT * rsi_channel
     lower_inner = 50 - INNER_MULT * rsi_channel
     ax2.plot(df['timestamp'], upper_inner, color='#A64D79', alpha=0.3)
     ax2.plot(df['timestamp'], lower_inner, color='#A64D79', alpha=0.3)
     ax2.fill_between(df['timestamp'], lower_inner, upper_inner, color='#A64D79', alpha=0.1)
     
-    # Plot divergences
     for div_type, idx in divergences:
         color = 'green' if div_type == 'bullish' else 'red'
         ax1.plot([df['timestamp'].iloc[idx-1], df['timestamp'].iloc[idx+1]], 
@@ -186,13 +188,11 @@ async def send_to_telegram():
 def main():
     df = get_ohlcv()
     
-    # Calculations
     rsi = calculate_rsi(df)
     rsi_channel = calculate_rsi_channel(rsi)
     bb_sma, bb_upper, bb_lower, bbr = calculate_bollinger_bands(df)
     resistance, support = find_sr_zones(df, bbr)
     
-    # Trendlines
     price_high = df[['close', 'open']].max(axis=1)
     price_low = df[['close', 'open']].min(axis=1)
     
@@ -204,15 +204,12 @@ def main():
     secondary_high_trendlines = calculate_trendlines(df, secondary_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     secondary_low_trendlines = calculate_trendlines(df, secondary_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     
-    # Divergences
     divergences = find_divergence(df['close'], rsi)
     
-    # Create chart
     create_chart(df, rsi, rsi_channel, bb_sma, bb_upper, bb_lower, resistance, support,
                 primary_high_trendlines, primary_low_trendlines,
                 secondary_high_trendlines, secondary_low_trendlines, divergences)
     
-    # Send to Telegram
     import asyncio
     asyncio.run(send_to_telegram())
 

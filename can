@@ -4,6 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 import telegram
+import mplfinance as mpf
+
 from config import BINANCE_API_KEY, BINANCE_API_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 # Initialize Binance exchange
@@ -25,6 +27,7 @@ def get_ohlcv(symbol='BTCUSDT', timeframe='1h', limit=100):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df.set_index('timestamp', inplace=True)  # Set timestamp as index for mplfinance
     return df
 
 # RSI calculation
@@ -61,22 +64,22 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     if len(pivot_points) < 2:
         return trendlines
     
-    timestamps = df['timestamp']
-    last_timestamp = timestamps.iloc[-1]
+    timestamps = df.index
+    last_timestamp = timestamps[-1]
     
     for i in range(1, len(pivot_points)):
         idx1 = pivot_points.index[i-1]
         idx2 = pivot_points.index[i]
         
-        x1 = timestamps.loc[idx1]
-        x2 = timestamps.loc[idx2]
+        x1 = timestamps[timestamps.get_loc(idx1)]
+        x2 = timestamps[timestamps[timestamps.get_loc(idx2)]]
         y1 = pivot_points.iloc[i-1]  # Using price values
         y2 = pivot_points.iloc[i]    # Using price values
         
         time_diff = (x2 - x1).total_seconds() / 3600
         slope = (y2 - y1) / time_diff if time_diff != 0 else 0
         
-        x_end = min(timestamps.iloc[-1] + pd.Timedelta(minutes=15 * extension), last_timestamp)
+        x_end = min(timestamps[-1] + pd.Timedelta(minutes=15 * extension), last_timestamp)
         extension_time = (x_end - x2).total_seconds() / 3600
         y_end = y2 + slope * extension_time
         
@@ -100,67 +103,78 @@ def find_divergence(price, rsi):
             divergences.append(('bearish', i))
     return divergences
 
-# Plotting
+# Modified Plotting with Candlesticks
 def create_chart(df, rsi, rsi_channel, 
-                primary_high_trendlines, primary_low_trendlines,
-                secondary_high_trendlines, secondary_low_trendlines, divergences):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), height_ratios=[2, 1], sharex=True)
-    
-    # Price chart with trendlines
-    ax1.plot(df['timestamp'], df['close'], label='Price', color='blue')
-    
-    # Plot trendlines on price chart
-    for tl in primary_high_trendlines + primary_low_trendlines:
-        color = '#cf0a83' if tl['slope'] < 0 else '#027521'
-        ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linewidth=2)
-    for tl in secondary_high_trendlines + secondary_low_trendlines:
-        color = 'red' if tl['slope'] < 0 else 'green'
-        ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linestyle='--', linewidth=1)
-    
-    # Plot divergences on price chart
+                 primary_high_trendlines, primary_low_trendlines,
+                 secondary_high_trendlines, secondary_low_trendlines, divergences):
+    # Prepare candlestick data
+    mpf_data = df[['open', 'high', 'low', 'close']].rename(columns={
+        'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'
+    })
+
+    # Create custom market colors and style
+    mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
+    s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
+
+    # Prepare trendline plots
+    primary_high_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
+                                          color='#cf0a83' if tl['slope'] < 0 else '#027521', 
+                                          linestyle='-', linewidth=2) 
+                          for tl in primary_high_trendlines]
+    primary_low_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
+                                         color='#cf0a83' if tl['slope'] < 0 else '#027521', 
+                                         linestyle='-', linewidth=2) 
+                         for tl in primary_low_trendlines]
+    secondary_high_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
+                                            color='red' if tl['slope'] < 0 else 'green', 
+                                            linestyle='--', linewidth=1) 
+                           for tl in secondary_high_trendlines]
+    secondary_low_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
+                                           color='red' if tl['slope'] < 0 else 'green', 
+                                           linestyle='--', linewidth=1) 
+                          for tl in secondary_low_trendlines]
+
+    # Prepare divergence plots
+    divergence_plots = []
     for div_type, idx in divergences:
         color = 'green' if div_type == 'bullish' else 'red'
-        ax1.plot([df['timestamp'].iloc[idx-1], df['timestamp'].iloc[idx+1]], 
-                [df['close'].iloc[idx-1], df['close'].iloc[idx+1]], 
-                color=color, linestyle='--', linewidth=2)
-    
-    ax1.set_title('BTCUSDT 15m - Price and RSI')
-    ax1.set_ylabel('Price')
-    ax1.legend()
-    
-    # RSI chart
-    valid_rsi = rsi.dropna()
-    valid_timestamps = df['timestamp'].loc[valid_rsi.index]
-    ax2.plot(valid_timestamps, valid_rsi, label='RSI', color='#A64D79')
-    ax2.axhline(y=60, color='blue', linestyle='--', alpha=0.3)
-    ax2.axhline(y=40, color='red', linestyle='--', alpha=0.3)
-    ax2.fill_between(valid_timestamps, 40, 60, color='#AB47BC', alpha=0.1)
-    
-    valid_rsi_channel = rsi_channel.dropna()
-    valid_channel_timestamps = df['timestamp'].loc[valid_rsi_channel.index]
-    upper_inner = 50 + INNER_MULT * valid_rsi_channel
-    lower_inner = 50 - INNER_MULT * valid_rsi_channel
-    ax2.plot(valid_channel_timestamps, upper_inner, color='#A64D79', alpha=0.3)
-    ax2.plot(valid_channel_timestamps, lower_inner, color='#A64D79', alpha=0.3)
-    ax2.fill_between(valid_channel_timestamps, lower_inner, upper_inner, color='#A64D79', alpha=0.1)
-    
-    # Plot divergences on RSI chart
-    for div_type, idx in divergences:
-        color = 'green' if div_type == 'bullish' else 'red'
-        ax2.plot([df['timestamp'].iloc[idx-1], df['timestamp'].iloc[idx+1]], 
-                [rsi.iloc[idx-1], rsi.iloc[idx+1]], 
-                color=color, linestyle='--', linewidth=2)
-    
-    ax2.set_ylabel('RSI')
-    ax2.legend()
-    
-    x_min = df['timestamp'].iloc[0]
-    x_max = df['timestamp'].iloc[-1]
-    ax1.set_xlim(x_min, x_max)
-    ax2.set_xlim(x_min, x_max)
-    
-    plt.tight_layout()
-    plt.savefig('rsi_analysis.png')
+        divergence_plots.append(mpf.make_addplot(
+            pd.Series([df['close'].iloc[idx-1], df['close'].iloc[idx+1]], 
+                      index=[df.index[idx-1], df.index[idx+1]]),
+            color=color, linestyle='--', linewidth=2
+        ))
+
+    # RSI plot setup
+    rsi_plot = mpf.make_addplot(rsi.dropna(), panel=1, color='#A64D79', ylabel='RSI')
+    upper_inner = 50 + INNER_MULT * rsi_channel.dropna()
+    lower_inner = 50 - INNER_MULT * rsi_channel.dropna()
+    upper_inner_plot = mpf.make_addplot(upper_inner, panel=1, color='#A64D79', alpha=0.3)
+    lower_inner_plot = mpf.make_addplot(lower_inner, panel=1, color='#A64D79', alpha=0.3)
+
+    # Combine all additional plots
+    add_plots = (primary_high_plots + primary_low_plots + secondary_high_plots + secondary_low_plots +
+                 divergence_plots + [rsi_plot, upper_inner_plot, lower_inner_plot])
+
+    # Plot using mplfinance
+    mpf.plot(
+        mpf_data,
+        type='candle',
+        style=s,
+        figratio=(15, 10),
+        tight_layout=True,
+        datetime_format='%Y-%m-%d %H:%M',
+        ylabel='Price ($)',
+        addplot=add_plots,
+        panel_ratios=(2, 1),  # Price panel larger than RSI panel
+        fill_between=dict(y1=lower_inner.values, y2=upper_inner.values, 
+                         where=(lower_inner.notna() & upper_inner.notna()), 
+                         alpha=0.1, color='#A64D79', panel=1),
+        hlines=[{'h': 60, 'color': 'blue', 'linestyle': '--', 'alpha': 0.3, 'panel': 1},
+                {'h': 40, 'color': 'red', 'linestyle': '--', 'alpha': 0.3, 'panel': 1}],
+        title='BTCUSDT 15m - Price and RSI'
+    )
+
+    plt.savefig('rsi_analysis.png', bbox_inches='tight')
     plt.close()
 
 # Send to Telegram
@@ -176,7 +190,7 @@ def main():
     rsi = calculate_rsi(df)
     rsi_channel = calculate_rsi_channel(rsi)
     
-    # Calculate pivot points using close price instead of RSI
+    # Calculate pivot points using close price
     price_high_pivots, price_low_pivots = find_pivot_points(df['close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
     price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
     

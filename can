@@ -75,7 +75,7 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
-# RSI Divergence (kept since it uses price, but RSI removed)
+# RSI Divergence (kept as placeholder, but RSI removed)
 def find_divergence(price, rsi):
     divergences = []
     for i in range(2, len(price)-1):
@@ -87,7 +87,7 @@ def find_divergence(price, rsi):
             divergences.append(('bearish', i))
     return divergences
 
-# Plotting with Candlesticks - RSI Removed
+# Plotting with Candlesticks - Corrected
 def create_chart(df, primary_high_trendlines, primary_low_trendlines,
                  secondary_high_trendlines, secondary_low_trendlines, divergences):
     # Prepare candlestick data
@@ -99,31 +99,56 @@ def create_chart(df, primary_high_trendlines, primary_low_trendlines,
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
     s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
 
+    # Function to create full-length trendline series
+    def create_trendline_series(df, tl):
+        series = pd.Series(index=df.index, dtype=float)  # Full length of df
+        start_idx = df.index.get_loc(tl['x1'], method='nearest')
+        end_idx = df.index.get_loc(tl['x2'], method='nearest')
+        if start_idx == end_idx:  # Avoid division by zero
+            return series  # Return empty series if no range
+        x_range = end_idx - start_idx
+        slope = (tl['y2'] - tl['y1']) / x_range if x_range != 0 else 0
+        for i in range(start_idx, end_idx + 1):
+            series.iloc[i] = tl['y1'] + slope * (i - start_idx)
+        return series
+
     # Prepare trendline plots
-    primary_high_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
+    primary_high_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
                                           color='#cf0a83' if tl['slope'] < 0 else '#027521', 
                                           linestyle='-', width=2) 
                           for tl in primary_high_trendlines]
-    primary_low_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
+    primary_low_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
                                          color='#cf0a83' if tl['slope'] < 0 else '#027521', 
                                          linestyle='-', width=2) 
                          for tl in primary_low_trendlines]
-    secondary_high_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
+    secondary_high_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
                                             color='red' if tl['slope'] < 0 else 'green', 
                                             linestyle='--', width=1) 
                            for tl in secondary_high_trendlines]
-    secondary_low_plots = [mpf.make_addplot(pd.Series([tl['y1'], tl['y2']], index=[tl['x1'], tl['x2']]), 
+    secondary_low_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
                                            color='red' if tl['slope'] < 0 else 'green', 
                                            linestyle='--', width=1) 
                           for tl in secondary_low_trendlines]
+
+    # Function to create full-length divergence series
+    def create_divergence_series(df, div_type, idx):
+        series = pd.Series(index=df.index, dtype=float)  # Full length of df
+        start_idx = idx - 1
+        end_idx = idx + 1
+        if start_idx < 0 or end_idx >= len(df):  # Check bounds
+            return series  # Return empty series if out of bounds
+        x_range = end_idx - start_idx
+        slope = (df['close'].iloc[end_idx] - df['close'].iloc[start_idx]) / x_range
+        for i in range(start_idx, end_idx + 1):
+            series.iloc[i] = df['close'].iloc[start_idx] + slope * (i - start_idx)
+        return series
 
     # Prepare divergence plots
     divergence_plots = []
     for div_type, idx in divergences:
         color = 'green' if div_type == 'bullish' else 'red'
         divergence_plots.append(mpf.make_addplot(
-            pd.Series([df['close'].iloc[idx-1], df['close'].iloc[idx+1]], 
-                      index=[df.index[idx-1], df.index[idx+1]]),
+            create_divergence_series(df, div_type, idx),
             color=color, linestyle='--', width=2
         ))
 
@@ -166,8 +191,7 @@ def main():
     secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     
-    # Note: Divergence calculation requires RSI, but since RSI is removed, we'll assume it's not needed
-    # If you still want divergences, we’d need to keep RSI calculation - let me know!
+    # Divergences disabled since RSI is removed
     divergences = []  # Placeholder; divergences removed unless RSI is re-added
     
     create_chart(df, primary_high_trendlines, primary_low_trendlines,

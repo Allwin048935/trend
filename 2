@@ -4,8 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 import telegram
-import mplfinance as mpf
-
+import requests
+import asyncio
 from config import BINANCE_API_KEY, BINANCE_API_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 # Initialize Binance exchange
@@ -16,21 +16,56 @@ exchange = ccxt.binance({
 })
 
 # Parameters
+RSI_LENGTH = 9
+INNER_MULT = 1.0
 PRIMARY_TRENDLINE_LENGTH = 20
 SECONDARY_TRENDLINE_LENGTH = 10
 MAX_TRENDLINES = 3
+TIMEFRAME = '1h'
+LIMIT = 100
 
-# Get BTCUSDT 15m data
-def get_ohlcv(symbol='BTCUSDT', timeframe='1h', limit=100):
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)  # Set timestamp as index for mplfinance
-    return df
+# Fetch selected symbols dynamically from Binance
+url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+try:
+    response = requests.get(url)
+    response.raise_for_status()
+    data = response.json()
+    SELECTED_SYMBOLS = [
+        s['symbol'] for s in data['symbols']
+        if s['quoteAsset'] == 'USDT' and s['status'] == 'TRADING'
+    ]
+except requests.exceptions.RequestException as e:
+    print(f"Error fetching symbols: {e}")
+    SELECTED_SYMBOLS = []
 
-# Trendlines (all based on close price)
+# Get OHLCV data
+def get_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT):
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except Exception as e:
+        print(f"Error fetching data for {symbol}: {e}")
+        return None
+
+# RSI calculation (unchanged)
+def calculate_rsi(df, length=RSI_LENGTH):
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=length).mean()
+    avg_loss = loss.rolling(window=length).mean()
+    rs = avg_gain / avg_loss
+    rsi = 50 + 50 * rs / (1 + rs)
+    return rsi
+
+def calculate_rsi_channel(rsi, length=RSI_LENGTH):
+    rsi_change = rsi.diff().abs()
+    return rsi_change.rolling(window=length).std()
+
+# Trendlines (unchanged)
 def find_pivot_points(series, length, left_length):
-    """Find pivot points (highs and lows) based on the input series (close price)."""
     pivots_high = pd.Series(index=series.index, dtype=float)
     pivots_low = pd.Series(index=series.index, dtype=float)
     
@@ -43,29 +78,27 @@ def find_pivot_points(series, length, left_length):
     return pivots_high, pivots_low
 
 def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLINES):
-    """Calculate trendlines based on pivot points derived from close price."""
     trendlines = []
     pivot_points = pivots.dropna()
     if len(pivot_points) < 2:
         return trendlines
     
-    timestamps = df.index  # This is a DatetimeIndex
-    last_timestamp = timestamps[-1]
+    timestamps = df['timestamp']
+    last_timestamp = timestamps.iloc[-1]
     
     for i in range(1, len(pivot_points)):
-        idx1 = pivot_points.index[i-1]  # Timestamp from pivot points
-        idx2 = pivot_points.index[i]    # Timestamp from pivot points
+        idx1 = pivot_points.index[i-1]
+        idx2 = pivot_points.index[i]
         
-        # Get the timestamps directly from the index
-        x1 = idx1  # Already a datetime
-        x2 = idx2  # Already a datetime
-        y1 = pivot_points.iloc[i-1]  # Close price value
-        y2 = pivot_points.iloc[i]    # Close price value
+        x1 = timestamps.loc[idx1]
+        x2 = timestamps.loc[idx2]
+        y1 = pivot_points.iloc[i-1]
+        y2 = pivot_points.iloc[i]
         
         time_diff = (x2 - x1).total_seconds() / 3600
         slope = (y2 - y1) / time_diff if time_diff != 0 else 0
         
-        x_end = min(timestamps[-1] + pd.Timedelta(minutes=15 * extension), last_timestamp)
+        x_end = min(timestamps.iloc[-1] + pd.Timedelta(minutes=15 * extension), last_timestamp)
         extension_time = (x_end - x2).total_seconds() / 3600
         y_end = y2 + slope * extension_time
         
@@ -77,84 +110,93 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
-# Plotting with Candlesticks - Corrected
-def create_chart(df, primary_high_trendlines, primary_low_trendlines,
-                 secondary_high_trendlines, secondary_low_trendlines):
-    # Prepare candlestick data
-    mpf_data = df[['open', 'high', 'low', 'close']].rename(columns={
-        'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'
-    })
+# RSI Divergence (unchanged)
+def find_divergence(price, rsi):
+    divergences = []
+    for i in range(2, len(price)-1):
+        if (price.iloc[i] < price.iloc[i-1] and rsi.iloc[i] > rsi.iloc[i-1] and 
+            price.iloc[i] < price.iloc[i+1] and rsi.iloc[i] > rsi.iloc[i+1]):
+            divergences.append(('bullish', i))
+        if (price.iloc[i] > price.iloc[i-1] and rsi.iloc[i] < rsi.iloc[i-1] and 
+            price.iloc[i] > price.iloc[i+1] and rsi.iloc[i] < rsi.iloc[i+1]):
+            divergences.append(('bearish', i))
+    return divergences
 
-    # Create custom market colors and style
-    mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
-    s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
-
-    # Function to find the closest index in df.index to a given timestamp
-    def find_closest_index(df_index, timestamp):
-        return (df_index - timestamp).abs().argmin()
-
-    # Function to create full-length trendline series
-    def create_trendline_series(df, tl):
-        """Interpolate trendline based on close price values across full data range."""
-        series = pd.Series(index=df.index, dtype=float)  # Full length of df
-        start_idx = find_closest_index(df.index, tl['x1'])
-        end_idx = find_closest_index(df.index, tl['x2'])
-        if start_idx == end_idx:  # Avoid division by zero
-            return series  # Return empty series if no range
-        x_range = end_idx - start_idx
-        slope = (tl['y2'] - tl['y1']) / x_range if x_range != 0 else 0
-        for i in range(min(start_idx, end_idx), max(start_idx, end_idx) + 1):
-            series.iloc[i] = tl['y1'] + slope * (i - start_idx)
-        return series
-
-    # Prepare trendline plots (all based on close price pivots)
-    primary_high_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
-                                          color='#cf0a83' if tl['slope'] < 0 else '#027521', 
-                                          linestyle='-', width=2) 
-                          for tl in primary_high_trendlines]
-    primary_low_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
-                                         color='#cf0a83' if tl['slope'] < 0 else '#027521', 
-                                         linestyle='-', width=2) 
-                         for tl in primary_low_trendlines]
-    secondary_high_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
-                                            color='red' if tl['slope'] < 0 else 'green', 
-                                            linestyle='--', width=1) 
-                           for tl in secondary_high_trendlines]
-    secondary_low_plots = [mpf.make_addplot(create_trendline_series(df, tl), 
-                                           color='red' if tl['slope'] < 0 else 'green', 
-                                           linestyle='--', width=1) 
-                          for tl in secondary_low_trendlines]
-
-    # Combine all additional plots
-    add_plots = (primary_high_plots + primary_low_plots + secondary_high_plots + secondary_low_plots)
-
-    # Plot using mplfinance - Single panel for candlesticks
-    mpf.plot(
-        mpf_data,
-        type='candle',
-        style=s,
-        figratio=(15, 10),
-        tight_layout=True,
-        datetime_format='%Y-%m-%d %H:%M',
-        ylabel='Price ($)',
-        addplot=add_plots,
-        title='BTCUSDT 15m - Candlestick Chart with Trendlines (Close Price)'
-    )
-
-    plt.savefig('chart_analysis.png', bbox_inches='tight')
+# Plotting (modified to include symbol in title)
+def create_chart(df, rsi, rsi_channel, 
+                primary_high_trendlines, primary_low_trendlines,
+                secondary_high_trendlines, secondary_low_trendlines, 
+                divergences, symbol):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), height_ratios=[2, 1], sharex=True)
+    
+    ax1.plot(df['timestamp'], df['close'], label='Price', color='blue')
+    
+    for tl in primary_high_trendlines + primary_low_trendlines:
+        color = '#cf0a83' if tl['slope'] < 0 else '#027521'
+        ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linewidth=2)
+    for tl in secondary_high_trendlines + secondary_low_trendlines:
+        color = 'red' if tl['slope'] < 0 else 'green'
+        ax1.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linestyle='--', linewidth=1)
+    
+    for div_type, idx in divergences:
+        color = 'green' if div_type == 'bullish' else 'red'
+        ax1.plot([df['timestamp'].iloc[idx-1], df['timestamp'].iloc[idx+1]], 
+                [df['close'].iloc[idx-1], df['close'].iloc[idx+1]], 
+                color=color, linestyle='--', linewidth=2)
+    
+    ax1.set_title(f'{symbol} {TIMEFRAME} - Price and RSI')
+    ax1.set_ylabel('Price')
+    ax1.legend()
+    
+    valid_rsi = rsi.dropna()
+    valid_timestamps = df['timestamp'].loc[valid_rsi.index]
+    ax2.plot(valid_timestamps, valid_rsi, label='RSI', color='#A64D79')
+    ax2.axhline(y=60, color='blue', linestyle='--', alpha=0.3)
+    ax2.axhline(y=40, color='red', linestyle='--', alpha=0.3)
+    ax2.fill_between(valid_timestamps, 40, 60, color='#AB47BC', alpha=0.1)
+    
+    valid_rsi_channel = rsi_channel.dropna()
+    valid_channel_timestamps = df['timestamp'].loc[valid_rsi_channel.index]
+    upper_inner = 50 + INNER_MULT * valid_rsi_channel
+    lower_inner = 50 - INNER_MULT * valid_rsi_channel
+    ax2.plot(valid_channel_timestamps, upper_inner, color='#A64D79', alpha=0.3)
+    ax2.plot(valid_channel_timestamps, lower_inner, color='#A64D79', alpha=0.3)
+    ax2.fill_between(valid_channel_timestamps, lower_inner, upper_inner, color='#A64D79', alpha=0.1)
+    
+    for div_type, idx in divergences:
+        color = 'green' if div_type == 'bullish' else 'red'
+        ax2.plot([df['timestamp'].iloc[idx-1], df['timestamp'].iloc[idx+1]], 
+                [rsi.iloc[idx-1], rsi.iloc[idx+1]], 
+                color=color, linestyle='--', linewidth=2)
+    
+    ax2.set_ylabel('RSI')
+    ax2.legend()
+    
+    x_min = df['timestamp'].iloc[0]
+    x_max = df['timestamp'].iloc[-1]
+    ax1.set_xlim(x_min, x_max)
+    ax2.set_xlim(x_min, x_max)
+    
+    plt.tight_layout()
+    plt.savefig(f'rsi_analysis_{symbol}.png')
     plt.close()
 
-# Send to Telegram
-async def send_to_telegram():
+# Send to Telegram (modified to include symbol)
+async def send_to_telegram(symbol):
     bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-    with open('chart_analysis.png', 'rb') as photo:
+    with open(f'rsi_analysis_{symbol}.png', 'rb') as photo:
         await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=photo)
 
-# Main execution
-def main():
-    df = get_ohlcv()
+# Main execution for multiple symbols
+def analyze_symbol(symbol):
+    print(f"Analyzing {symbol}...")
+    df = get_ohlcv(symbol)
+    if df is None or df.empty:
+        return
     
-    # Calculate pivot points using close price for all trendlines
+    rsi = calculate_rsi(df)
+    rsi_channel = calculate_rsi_channel(rsi)
+    
     price_high_pivots, price_low_pivots = find_pivot_points(df['close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
     price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
     
@@ -163,11 +205,25 @@ def main():
     secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     
-    create_chart(df, primary_high_trendlines, primary_low_trendlines,
-                 secondary_high_trendlines, secondary_low_trendlines)
+    divergences = find_divergence(df['close'], rsi)
     
-    import asyncio
-    asyncio.run(send_to_telegram())
+    create_chart(df, rsi, rsi_channel,
+                 primary_high_trendlines, primary_low_trendlines,
+                 secondary_high_trendlines, secondary_low_trendlines, 
+                 divergences, symbol)
+    
+    asyncio.run(send_to_telegram(symbol))
+
+def main():
+    # Limit to top N symbols or specific symbols if desired
+    symbols_to_analyze = SELECTED_SYMBOLS[:30]  # Example: analyze first 10 symbols
+    # Or specify specific symbols: symbols_to_analyze = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
+    
+    for symbol in symbols_to_analyze:
+        try:
+            analyze_symbol(symbol)
+        except Exception as e:
+            print(f"Error processing {symbol}: {e}")
 
 if __name__ == "__main__":
     main()

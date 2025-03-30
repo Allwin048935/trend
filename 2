@@ -107,22 +107,39 @@ def create_chart(df, primary_high_trendlines, primary_low_trendlines,
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
     s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
     
-    # Prepare trendline plots
+    # Prepare add plots
     add_plots = [
         mpf.make_addplot(df['close'], color='blue', width=1, label='Close Price')
     ]
     
+    # Function to convert trendline to full-length series
+    def trendline_to_series(df, tl):
+        series = pd.Series(index=df['timestamp'], dtype=float)
+        start_idx = df['timestamp'].searchsorted(tl['x1'])
+        end_idx = df['timestamp'].searchsorted(tl['x2'])
+        if end_idx >= len(df):
+            end_idx = len(df) - 1
+        
+        if start_idx < len(df) and end_idx < len(df):
+            time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
+            if time_diff != 0:
+                slope = (tl['y2'] - tl['y1']) / time_diff
+                for i in range(start_idx, end_idx + 1):
+                    time_from_start = (df['timestamp'].iloc[i] - tl['x1']).total_seconds() / 3600
+                    series.iloc[i] = tl['y1'] + slope * time_from_start
+        return series
+    
     # Add primary trendlines
     for tl in primary_high_trendlines + primary_low_trendlines:
         color = '#cf0a83' if tl['slope'] < 0 else '#027521'
-        trend_data = pd.Series(index=[tl['x1'], tl['x2']], data=[tl['y1'], tl['y2']])
-        add_plots.append(mpf.make_addplot(trend_data, color=color, width=2))
+        trend_series = trendline_to_series(df, tl)
+        add_plots.append(mpf.make_addplot(trend_series, color=color, width=2))
     
     # Add secondary trendlines
     for tl in secondary_high_trendlines + secondary_low_trendlines:
         color = 'red' if tl['slope'] < 0 else 'green'
-        trend_data = pd.Series(index=[tl['x1'], tl['x2']], data=[tl['y1'], tl['y2']])
-        add_plots.append(mpf.make_addplot(trend_data, color=color, linestyle='--', width=1))
+        trend_series = trendline_to_series(df, tl)
+        add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1))
     
     # Create the plot
     fig, axlist = mpf.plot(

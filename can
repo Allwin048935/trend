@@ -45,7 +45,7 @@ def calculate_rsi_channel(rsi, length=RSI_LENGTH):
     rsi_change = rsi.diff().abs()
     return rsi_change.rolling(window=length).std()
 
-# Trendlines (based on price)
+# Trendlines (based on price) - Corrected
 def find_pivot_points(series, length, left_length):
     pivots_high = pd.Series(index=series.index, dtype=float)
     pivots_low = pd.Series(index=series.index, dtype=float)
@@ -64,17 +64,18 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     if len(pivot_points) < 2:
         return trendlines
     
-    timestamps = df.index
+    timestamps = df.index  # This is a DatetimeIndex
     last_timestamp = timestamps[-1]
     
     for i in range(1, len(pivot_points)):
-        idx1 = pivot_points.index[i-1]
-        idx2 = pivot_points.index[i]
+        idx1 = pivot_points.index[i-1]  # Timestamp from pivot points
+        idx2 = pivot_points.index[i]    # Timestamp from pivot points
         
-        x1 = timestamps[timestamps.get_loc(idx1)]
-        x2 = timestamps[timestamps[timestamps.get_loc(idx2)]]
-        y1 = pivot_points.iloc[i-1]  # Using price values
-        y2 = pivot_points.iloc[i]    # Using price values
+        # Get the timestamps directly from the index
+        x1 = idx1  # Already a datetime
+        x2 = idx2  # Already a datetime
+        y1 = pivot_points.iloc[i-1]  # Price value
+        y2 = pivot_points.iloc[i]    # Price value
         
         time_diff = (x2 - x1).total_seconds() / 3600
         slope = (y2 - y1) / time_diff if time_diff != 0 else 0
@@ -103,7 +104,7 @@ def find_divergence(price, rsi):
             divergences.append(('bearish', i))
     return divergences
 
-# Modified Plotting with Candlesticks
+# Plotting with Candlesticks
 def create_chart(df, rsi, rsi_channel, 
                  primary_high_trendlines, primary_low_trendlines,
                  secondary_high_trendlines, secondary_low_trendlines, divergences):

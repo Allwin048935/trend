@@ -135,11 +135,11 @@ def create_chart(df, rsi, rsi_channel,
                                            linestyle='--', width=1) 
                           for tl in secondary_low_trendlines]
 
-    # Prepare divergence plots
+    # Prepare divergence plots - Corrected 'mpl' to 'mpf'
     divergence_plots = []
     for div_type, idx in divergences:
         color = 'green' if div_type == 'bullish' else 'red'
-        divergence_plots.append(mpl.make_addplot(
+        divergence_plots.append(mpf.make_addplot(
             pd.Series([df['close'].iloc[idx-1], df['close'].iloc[idx+1]], 
                       index=[df.index[idx-1], df.index[idx+1]]),
             color=color, linestyle='--', width=2
@@ -159,7 +159,7 @@ def create_chart(df, rsi, rsi_channel,
                                    panel=1, color='red', linestyle='--', alpha=0.3, width=1)
 
     # Combine all additional plots
-    add_plots = (primary_high_plots + primary_low_plots + secondary_high_plots + secondary_low_plots +
+    add_plots = (primary_high_plots + primary_low_plots + secondary_high_plots + secondary_low_trendlines +
                  divergence_plots + [rsi_plot, upper_inner_plot, lower_inner_plot, 
                                      rsi_hline_60, rsi_hline_40])
 

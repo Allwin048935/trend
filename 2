@@ -96,22 +96,7 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
-# Fibonacci levels
-def calculate_fibonacci_levels(df):
-    high_price = df['High'].max()
-    low_price = df['Low'].min()
-    diff = high_price - low_price
-    levels = {
-        '0.0%': high_price,
-        '23.6%': high_price - 0.236 * diff,
-        '38.2%': high_price - 0.382 * diff,
-        '50.0%': high_price - 0.5 * diff,
-        '61.8%': high_price - 0.618 * diff,
-        '100.0%': low_price
-    }
-    return levels
-
-# Plotting with candlesticks, close price, trendlines, and Fibonacci levels
+# Plotting with candlesticks, close price, and trendlines
 def create_chart(df, primary_high_trendlines, primary_low_trendlines,
                 secondary_high_trendlines, secondary_low_trendlines, symbol):
     if df.empty:
@@ -124,16 +109,13 @@ def create_chart(df, primary_high_trendlines, primary_low_trendlines,
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
     s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
     
-    # Calculate Fibonacci levels
-    fib_levels = calculate_fibonacci_levels(df)
-    
     # Create the plot
     fig, axlist = mpf.plot(
         mpf_data,
         figratio=(15, 8),
         type='candle',
         style=s,
-        title=f'{symbol} {TIMEFRAME} - Price with Trendlines and Fibonacci',
+        title=f'{symbol} {TIMEFRAME} - Price with Trendlines',
         ylabel='Price ($)',
         addplot=[
             mpf.make_addplot(df['Close'], color='blue', width=1, label='Close Price')
@@ -151,18 +133,6 @@ def create_chart(df, primary_high_trendlines, primary_low_trendlines,
     for tl in secondary_high_trendlines + secondary_low_trendlines:
         color = 'red' if tl['slope'] < 0 else 'green'
         ax.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linestyle='--', linewidth=1)
-    
-    # Plot Fibonacci levels
-    for level, price in fib_levels.items():
-        ax.axhline(price, color='yellow', linestyle='-', linewidth=1)
-        ax.annotate(f'{level}: {price:.2f}', xy=(1, price), xytext=(5, 0), 
-                   textcoords='offset points', ha='left', va='center',
-                   color='black', fontsize=8, backgroundcolor='white')
-    
-    # Adjust y-axis limits
-    ylim = [min(fib_levels.values()) - (0.05 * (max(fib_levels.values()) - min(fib_levels.values()))),
-            max(fib_levels.values()) + (0.05 * (max(fib_levels.values()) - min(fib_levels.values())))]
-    ax.set_ylim(ylim)
     
     # Add legend
     ax.legend()

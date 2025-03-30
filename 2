@@ -44,7 +44,6 @@ def get_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT):
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        # Rename columns for mplfinance compatibility
         df = df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'})
         return df
     except Exception as e:
@@ -97,7 +96,7 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
-# Modified plotting function with candlesticks and close price
+# Plotting with candlesticks and trendlines
 def create_chart(df, primary_high_trendlines, primary_low_trendlines,
                 secondary_high_trendlines, secondary_low_trendlines, symbol):
     if df.empty:
@@ -110,8 +109,26 @@ def create_chart(df, primary_high_trendlines, primary_low_trendlines,
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
     s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
     
+    # Prepare trendline plots for mplfinance
+    trendline_plots = []
+    
+    # Primary trendlines
+    for tl in primary_high_trendlines + primary_low_trendlines:
+        color = '#cf0a83' if tl['slope'] < 0 else '#027521'
+        x = [tl['x1'], tl['x2']]
+        y = [tl['y1'], tl['y2']]
+        trendline_plots.append(mpf.make_addplot(pd.Series(y, index=x), color=color, width=2))
+    
+    # Secondary trendlines
+    for tl in secondary_high_trendlines + secondary_low_trendlines:
+        color = 'red' if tl['slope'] < 0 else 'green'
+        x = [tl['x1'], tl['x2']]
+        y = [tl['y1'], tl['y2']]
+        trendline_plots.append(mpf.make_addplot(pd.Series(y, index=x), color=color, linestyle='--', width=1))
+    
     # Add close price line
     close_price = df['Close']
+    trendline_plots.append(mpf.make_addplot(close_price, color='blue', width=1, label='Close Price'))
     
     # Create the plot
     fig, axlist = mpf.plot(
@@ -123,24 +140,9 @@ def create_chart(df, primary_high_trendlines, primary_low_trendlines,
         datetime_format='%Y-%m-%d',
         ylabel='Price ($)',
         title=f'{symbol} {TIMEFRAME} - Price with Trendlines',
-        addplot=[
-            mpf.make_addplot(close_price, color='blue', width=1, label='Close Price')
-        ],
+        addplot=trendline_plots,
         returnfig=True
     )
-    
-    ax = axlist[0]
-    
-    # Plot trendlines
-    for tl in primary_high_trendlines + primary_low_trendlines:
-        color = '#cf0a83' if tl['slope'] < 0 else '#027521'
-        ax.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linewidth=2)
-    
-    for tl in secondary_high_trendlines + secondary_low_trendlines:
-        color = 'red' if tl['slope'] < 0 else 'green'
-        ax.plot([tl['x1'], tl['x2']], [tl['y1'], tl['y2']], color=color, linestyle='--', linewidth=1)
-    
-    ax.legend()
     
     # Save to buffer
     buf = BytesIO()

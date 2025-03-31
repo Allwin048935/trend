@@ -18,11 +18,11 @@ exchange = ccxt.binance({
 })
 
 # Parameters
-PRIMARY_TRENDLINE_LENGTH = 30
-SECONDARY_TRENDLINE_LENGTH = 15
+PRIMARY_TRENDLINE_LENGTH = 20
+SECONDARY_TRENDLINE_LENGTH = 10
 MAX_TRENDLINES = 2
-TIMEFRAME = '8h'
-LIMIT = 150
+TIMEFRAME = '15m'
+LIMIT = 100
 
 # Fetch selected symbols dynamically from Binance
 url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
@@ -152,17 +152,19 @@ def create_chart(df, primary_high_trendlines, primary_low_trendlines,
     )
     
     ax = axlist[0]
-    # No legend needed since close price isn't plotted
     
-    # Save the plot
-    plt.savefig(f'price_analysis_{symbol}.png', bbox_inches='tight')
+    # Save to BytesIO buffer instead of file
+    buf = BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)  # Rewind buffer to the beginning
     plt.close(fig)
+    
+    return buf  # Return the buffer
 
 # Send to Telegram
-async def send_to_telegram(symbol):
+async def send_to_telegram(symbol, image_buffer):
     bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-    with open(f'price_analysis_{symbol}.png', 'rb') as photo:
-        await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=photo)
+    await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=image_buffer)
 
 # Main execution for multiple symbols
 def analyze_symbol(symbol):
@@ -179,10 +181,15 @@ def analyze_symbol(symbol):
     secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     
-    create_chart(df, primary_high_trendlines, primary_low_trendlines,
-                 secondary_high_trendlines, secondary_low_trendlines, symbol)
+    # Get the image buffer
+    image_buffer = create_chart(df, primary_high_trendlines, primary_low_trendlines,
+                                secondary_high_trendlines, secondary_low_trendlines, symbol)
     
-    asyncio.run(send_to_telegram(symbol))
+    # Send directly to Telegram
+    asyncio.run(send_to_telegram(symbol, image_buffer))
+    
+    # Clean up the buffer
+    image_buffer.close()
 
 def main():
     # Limit to top N symbols or specific symbols if desired

@@ -42,6 +42,11 @@ logging.getLogger('ccxt').setLevel(logging.WARNING)
 # Time interval
 interval = '8h'
 
+# Trendline Parameters (from reference code)
+PRIMARY_TRENDLINE_LENGTH = 30
+SECONDARY_TRENDLINE_LENGTH = 15
+MAX_TRENDLINES = 3
+
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
 PIONEX_API_KEY = config.PIONEX_API_KEY
@@ -89,7 +94,6 @@ def api_request(method, endpoint, params=None, body=None):
         logger.error(f"API request failed for {endpoint}: {e}")
         return None
 
-# Fetch symbols from Pionex (unchanged)
 def fetch_pionex_symbols():
     endpoint = "/api/v1/common/symbols"
     params = {}
@@ -102,7 +106,7 @@ def fetch_pionex_symbols():
 
 SELECTED_SYMBOLS = fetch_pionex_symbols()
 
-# Initialize Binance client (unchanged)
+# Initialize Binance client
 binance = ccxt.binance({
     'apiKey': config.BINANCE_API_KEY,
     'secret': config.BINANCE_API_SECRET,
@@ -110,7 +114,7 @@ binance = ccxt.binance({
     'options': {'defaultType': 'future'}
 })
 
-# Store active orders and last alerts (unchanged)
+# Store active orders and last alerts
 active_orders = {}
 last_alert_messages = {}
 ALERT_COOLDOWN = 60  # minutes
@@ -226,7 +230,7 @@ def get_current_price(symbol):
     logger.error(f"Failed to fetch price for {pionex_symbol}")
     return None, None
 
-# Binance Data Functions (unchanged except for removal of fib data)
+# Binance Data Functions
 def get_historical_data(symbol, interval, limit=75):
     ohlcv = binance.fetch_ohlcv(symbol, interval, limit=limit)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -267,7 +271,7 @@ def find_pivot_points(series, length, left_length):
     
     return pivots_high, pivots_low
 
-def calculate_trendlines(df, pivots, length, extension=50, max_lines=3):
+def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLINES):
     trendlines = []
     pivot_points = pivots.dropna()
     if len(pivot_points) < 2:
@@ -300,7 +304,7 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=3):
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
-# Updated Plotting Function
+# Updated Plotting Function with Primary and Secondary Trendlines
 def plot_candles(df, symbol, title):
     if df.empty:
         return None
@@ -319,10 +323,14 @@ def plot_candles(df, symbol, title):
     ]
     macd_colors.insert(0, 'gray')
     
-    # Calculate trendlines
-    price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], 30, 15)
-    primary_high_trendlines = calculate_trendlines(df, price_high_pivots, 30)
-    primary_low_trendlines = calculate_trendlines(df, price_low_pivots, 30)
+    # Calculate trendlines (primary and secondary)
+    price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+    price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+    
+    primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+    primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+    secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
+    secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     
     # Prepare add plots
     add_plots = [
@@ -348,11 +356,17 @@ def plot_candles(df, symbol, title):
                     series.iloc[i] = tl['y1'] + slope * time_from_start
         return series
     
-    # Add trendlines to plot
+    # Add primary trendlines
     for tl in primary_high_trendlines + primary_low_trendlines:
         color = '#cf0a83' if tl['slope'] < 0 else '#027521'
         trend_series = trendline_to_series(df, tl)
         add_plots.append(mpf.make_addplot(trend_series, color=color, width=2))
+    
+    # Add secondary trendlines
+    for tl in secondary_high_trendlines + secondary_low_trendlines:
+        color = 'red' if tl['slope'] < 0 else 'green'
+        trend_series = trendline_to_series(df, tl)
+        add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1))
     
     # Create the plot
     fig, axlist = mpf.plot(
@@ -376,7 +390,7 @@ def plot_candles(df, symbol, title):
     plt.close(fig)
     return buf
 
-# Telegram Functions (unchanged except for plot_candles call adjustment)
+# Telegram Functions
 async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer, close_price):
     if image_buffer is None:
         return

@@ -35,14 +35,11 @@ logger.handlers.clear()
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
-# Suppress urllib3 and ccxt noise
 logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
-# Time interval
+# Time interval and trendline parameters
 interval = '8h'
-
-# Trendline Parameters (from reference code)
 PRIMARY_TRENDLINE_LENGTH = 30
 SECONDARY_TRENDLINE_LENGTH = 15
 MAX_TRENDLINES = 3
@@ -51,6 +48,14 @@ MAX_TRENDLINES = 3
 BASE_URL = "https://api.pionex.com"
 PIONEX_API_KEY = config.PIONEX_API_KEY
 PIONEX_SECRET_KEY = config.PIONEX_SECRET_KEY
+
+# Binance client
+binance = ccxt.binance({
+    'apiKey': config.BINANCE_API_KEY,
+    'secret': config.BINANCE_API_SECRET,
+    'enableRateLimit': True,
+    'options': {'defaultType': 'future'}
+})
 
 # Pionex API Functions (unchanged)
 def generate_signature(method, path, params, body=None):
@@ -104,15 +109,19 @@ def fetch_pionex_symbols():
     logger.error("Failed to fetch symbols from Pionex")
     return []
 
-SELECTED_SYMBOLS = fetch_pionex_symbols()
+# Fetch Binance symbols and filter
+def fetch_binance_symbols():
+    try:
+        markets = binance.load_markets()
+        return [symbol for symbol in markets.keys() if symbol.endswith('USDT') and markets[symbol]['active']]
+    except Exception as e:
+        logger.error(f"Failed to fetch Binance symbols: {e}")
+        return []
 
-# Initialize Binance client
-binance = ccxt.binance({
-    'apiKey': config.BINANCE_API_KEY,
-    'secret': config.BINANCE_API_SECRET,
-    'enableRateLimit': True,
-    'options': {'defaultType': 'future'}
-})
+# Filter symbols available on both exchanges
+pionex_symbols = set(fetch_pionex_symbols())
+binance_symbols = set(fetch_binance_symbols())
+SELECTED_SYMBOLS = list(pionex_symbols.intersection(binance_symbols))
 
 # Store active orders and last alerts
 active_orders = {}
@@ -165,7 +174,7 @@ def place_market_order(symbol, side, amount_usdt=13.0, quantity=None):
         body["amount"] = f"{amount_usdt:.{quote_precision}f}"
         buy_quantity = amount_usdt / best_bid
         buy_quantity = f"{buy_quantity:.{base_precision}f}"
-    else:  # SELL
+    else:
         if quantity is None:
             quantity = amount_usdt / best_bid
         body["size"] = f"{quantity:.{base_precision}f}"
@@ -232,12 +241,16 @@ def get_current_price(symbol):
 
 # Binance Data Functions
 def get_historical_data(symbol, interval, limit=75):
-    ohlcv = binance.fetch_ohlcv(symbol, interval, limit=limit)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-    df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-    return df
+    try:
+        ohlcv = binance.fetch_ohlcv(symbol, interval, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        return df
+    except ccxt.ExchangeError as e:
+        logger.error(f"Binance fetch error for {symbol}: {e}")
+        return pd.DataFrame()  # Return empty DataFrame on error
 
 def calculate_ema(df, period):
     return ta.trend.EMAIndicator(df['Close'], window=period).ema_indicator()
@@ -250,6 +263,9 @@ def calculate_macd(df):
     return df
 
 def check_histogram_cross(df):
+    if len(df) < 5:  # Need at least 5 rows for the check
+        logger.warning(f"Not enough data for {df.name if hasattr(df, 'name') else 'unknown symbol'} to check histogram cross")
+        return False, False
     calculate_macd(df)
     hist_cross_over = (df['histogram'].iloc[-2] > df['histogram'].iloc[-3] and 
                       df['histogram'].iloc[-3] > df['histogram'].iloc[-4] and 
@@ -258,7 +274,7 @@ def check_histogram_cross(df):
                        df['histogram'].iloc[-3] >= df['histogram'].iloc[-4])
     return hist_cross_over, hist_cross_under
 
-# Trendline Functions (from reference code)
+# Trendline Functions
 def find_pivot_points(series, length, left_length):
     pivots_high = pd.Series(index=series.index, dtype=float)
     pivots_low = pd.Series(index=series.index, dtype=float)
@@ -304,16 +320,15 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
-# Updated Plotting Function with Primary and Secondary Trendlines
 def plot_candles(df, symbol, title):
-    if df.empty:
+    if df.empty or len(df) < 5:  # Minimum data check
+        logger.warning(f"Not enough data to plot candles for {symbol}")
         return None
     
     mpf_data = df[['Open', 'High', 'Low', 'Close']].copy()
     mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
     s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
     
-    # Calculate indicators
     short_ema = calculate_ema(df, 3)
     long_ema = calculate_ema(df, 7)
     calculate_macd(df)
@@ -323,7 +338,6 @@ def plot_candles(df, symbol, title):
     ]
     macd_colors.insert(0, 'gray')
     
-    # Calculate trendlines (primary and secondary)
     price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
     price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
     
@@ -332,14 +346,12 @@ def plot_candles(df, symbol, title):
     secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
     
-    # Prepare add plots
     add_plots = [
         mpf.make_addplot(short_ema, color='cyan', width=1.5, linestyle='-'),
         mpf.make_addplot(long_ema, color='magenta', width=1.5, linestyle='-'),
         mpf.make_addplot(df['histogram'], type='bar', color=macd_colors, panel=1, ylabel="MACD Histogram")
     ]
     
-    # Function to convert trendline to series
     def trendline_to_series(df, tl):
         series = pd.Series(index=df.index, dtype=float)
         start_idx = df.index.searchsorted(tl['x1'])
@@ -356,19 +368,16 @@ def plot_candles(df, symbol, title):
                     series.iloc[i] = tl['y1'] + slope * time_from_start
         return series
     
-    # Add primary trendlines
     for tl in primary_high_trendlines + primary_low_trendlines:
         color = '#cf0a83' if tl['slope'] < 0 else '#027521'
         trend_series = trendline_to_series(df, tl)
         add_plots.append(mpf.make_addplot(trend_series, color=color, width=2))
     
-    # Add secondary trendlines
     for tl in secondary_high_trendlines + secondary_low_trendlines:
         color = 'red' if tl['slope'] < 0 else 'green'
         trend_series = trendline_to_series(df, tl)
         add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1))
     
-    # Create the plot
     fig, axlist = mpf.plot(
         mpf_data,
         figratio=(10, 6),
@@ -484,13 +493,18 @@ async def check_alerts(bot: Bot):
     for symbol in SELECTED_SYMBOLS:
         try:
             historical_data = get_historical_data(symbol, interval)
+            if historical_data.empty:
+                continue  # Skip if no data fetched
+
             hist_cross_over, hist_cross_under = check_histogram_cross(historical_data)
+            historical_data.name = symbol  # Set name for logging
 
             if hist_cross_over:
                 message = f"Buy #{symbol}"
                 title = f'Histogram Cross Over {symbol}'
                 image_buffer = plot_candles(historical_data, symbol, title)
-                await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, historical_data['Close'].iloc[-1])
+                if image_buffer:
+                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, historical_data['Close'].iloc[-1])
             
             if hist_cross_under and symbol in active_orders:
                 order_info = active_orders[symbol]
@@ -516,7 +530,8 @@ async def run_alert_loop(application: Application):
 
 async def main():
     application = Application.builder().token(config.TELEGRAM_TOKEN).build()
-    application.add_handler(CallbackQueryHandler(handle_telegram_callback))
+    application.add_handler(CallbackQueryHandler(handle_telegra
+m_callback))
     asyncio.create_task(run_alert_loop(application))
     await application.run_polling(allowed_updates=Update.ALL_TYPES)
 

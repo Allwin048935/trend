@@ -248,8 +248,7 @@ def get_historical_data(symbol, interval, limit=75):
         ohlcv = binance.fetch_ohlcv(symbol, interval, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
         logger.info(f"Fetched {len(df)} rows for {symbol}")
         return df
     except ccxt.ExchangeError as e:
@@ -295,31 +294,29 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     if len(pivot_points) < 2:
         return trendlines
     
-    timestamps = df.index
-    last_timestamp = timestamps[-1]
+    timestamps = df['timestamp']
+    last_timestamp = timestamps.iloc[-1]
     
     for i in range(1, len(pivot_points)):
         idx1 = pivot_points.index[i-1]
         idx2 = pivot_points.index[i]
         
-        x1 = timestamps[idx1]
-        x2 = timestamps[idx2]
+        x1 = timestamps.loc[idx1]
+        x2 = timestamps.loc[idx2]
         y1 = pivot_points.iloc[i-1]
         y2 = pivot_points.iloc[i]
         
         time_diff = (x2 - x1).total_seconds() / 3600
         slope = (y2 - y1) / time_diff if time_diff != 0 else 0
         
-        x_end = min(timestamps[-1] + pd.Timedelta(minutes=15 * extension), last_timestamp)
+        x_end = min(timestamps.iloc[-1] + pd.Timedelta(minutes=15 * extension), last_timestamp)
         extension_time = (x_end - x2).total_seconds() / 3600
         y_end = y2 + slope * extension_time
         
         trendlines.append({
             'x1': x1, 'y1': y1,
             'x2': x_end, 'y2': y_end,
-            'slope': slope,
-            'idx1': df.index.get_loc(idx1),  # Store integer index positions
-            'idx2': df.index.get_loc(idx2)
+            'slope': slope
         })
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
@@ -330,9 +327,9 @@ def plot_candles(df, symbol, title):
         return None
     
     try:
-        df = df.reset_index()
-        mpf_data = df[['Open', 'High', 'Low', 'Close']].copy()
-        logger.info(f"Preparing plot data for {symbol} with {len(mpf_data)} rows")
+        # Prepare data for mplfinance
+        df_plot = df.set_index('timestamp')
+        df_plot = df_plot[['Open', 'High', 'Low', 'Close']].copy()
         
         mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
         s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
@@ -364,17 +361,18 @@ def plot_candles(df, symbol, title):
         ]
         
         def trendline_to_series(df, tl):
-            series = pd.Series(index=df.index, dtype=float)
-            start_idx = tl['idx1']  # Use stored integer index
-            end_idx = min(len(df) - 1, tl['idx2'] + 50)  # Extend by 50 bars or to end
-            logger.info(f"Trendline for {symbol}: start_idx={start_idx}, end_idx={end_idx}")
+            series = pd.Series(index=df['timestamp'], dtype=float)
+            start_idx = df['timestamp'].searchsorted(tl['x1'])
+            end_idx = df['timestamp'].searchsorted(tl['x2'])
+            if end_idx >= len(df):
+                end_idx = len(df) - 1
             
             if start_idx < len(df) and end_idx < len(df):
-                time_diff = end_idx - start_idx
+                time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
                 if time_diff != 0:
                     slope = (tl['y2'] - tl['y1']) / time_diff
                     for i in range(start_idx, end_idx + 1):
-                        time_from_start = i - start_idx
+                        time_from_start = (df['timestamp'].iloc[i] - tl['x1']).total_seconds() / 3600
                         series.iloc[i] = tl['y1'] + slope * time_from_start
             return series
         
@@ -389,7 +387,7 @@ def plot_candles(df, symbol, title):
             add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1))
         
         fig, axlist = mpf.plot(
-            mpf_data,
+            df_plot,
             figratio=(10, 6),
             type="candle",
             style=s,
@@ -486,86 +484,4 @@ async def handle_telegram_callback(update: Update, context: ContextTypes.DEFAULT
         logger.info(f"Attempting to sell {sell_quantity} of {symbol} at {sell_price}")
         
         if available_balance < sell_quantity:
-            await query.edit_message_text(f"Insufficient balance for SELL: {available_balance} < {sell_quantity}")
-            logger.error(f"Insufficient balance for {symbol}: {available_balance} < {sell_quantity}")
-            return
-        
-        sell_order_id = place_limit_order(symbol, "SELL", sell_quantity, sell_price)
-        if not sell_order_id:
-            await query.edit_message_text(f"Failed to place SELL order for {symbol}")
-            logger.error(f"SELL order failed for {symbol} after BUY, not storing in active_orders")
-            return
-        
-        active_orders[symbol] = {
-            'order_id': sell_order_id,
-            'sell_price': sell_price,
-            'side': 'BUY',
-            'quantity': sell_quantity
-        }
-        await query.edit_message_text(f"Position opened with BUY for {symbol} at {best_bid:.2f}\nSELL order placed at {sell_price:.2f}")
-    except Exception as e:
-        logger.error(f"Error in callback handler: {e}")
-        await query.edit_message_text(f"Error processing request: {str(e)}")
-
-async def check_alerts(bot: Bot):
-    logger.info("Starting alert check cycle")
-    if not SELECTED_SYMBOLS:
-        logger.error("No symbols selected to check - bot cannot proceed without symbols")
-        return
-    
-    for symbol in SELECTED_SYMBOLS:
-        logger.info(f"Processing {symbol}")
-        try:
-            historical_data = get_historical_data(symbol, interval)
-            if historical_data.empty:
-                logger.warning(f"No historical data fetched for {symbol}")
-                continue
-
-            historical_data.name = symbol
-            hist_cross_over, hist_cross_under = check_histogram_cross(historical_data)
-
-            if hist_cross_over:
-                logger.info(f"Buy signal detected for {symbol}")
-                message = f"Buy #{symbol}"
-                title = f'Histogram Cross Over {symbol}'
-                image_buffer = plot_candles(historical_data, symbol, title)
-                if image_buffer:
-                    logger.info(f"Sending alert for {symbol}")
-                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, historical_data['Close'].iloc[-1])
-                else:
-                    logger.warning(f"Failed to generate chart for {symbol}")
-            
-            if hist_cross_under and symbol in active_orders:
-                logger.info(f"Sell signal detected for {symbol}")
-                order_info = active_orders[symbol]
-                if order_info['side'] == 'BUY':
-                    if cancel_order(symbol, order_info['order_id']):
-                        sell_order_id, _ = place_market_order(symbol, "SELL", quantity=order_info['quantity'])
-                        if sell_order_id:
-                            del active_orders[symbol]
-                            await bot.send_message(chat_id=config.CHAT_ID, 
-                                                 text=f"Position closed with SELL for {symbol} due to histogram cross under")
-                        else:
-                            logger.error(f"Failed to place market SELL for {symbol}")
-                    else:
-                        logger.error(f"Failed to cancel SELL order for {symbol}")
-        except Exception as e:
-            logger.error(f"Error checking {symbol}: {e}")
-    logger.info("Alert check cycle completed")
-
-async def run_alert_loop(application: Application):
-    bot = application.bot
-    while True:
-        await check_alerts(bot)
-        logger.info("Sleeping for 300 seconds")
-        await asyncio.sleep(300)
-
-async def main():
-    application = Application.builder().token(config.TELEGRAM_TOKEN).build()
-    application.add_handler(CallbackQueryHandler(handle_telegram_callback))
-    asyncio.create_task(run_alert_loop(application))
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == '__main__':
-    nest_asyncio.apply()
-    asyncio.run(main())
+            await query.edit_message_text(f"Insufficient balance for SELL: {available_balance} < {sell_quantit

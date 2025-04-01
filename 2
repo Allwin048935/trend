@@ -104,28 +104,33 @@ def fetch_pionex_symbols():
     params = {}
     data = api_request("GET", endpoint, params)
     if data and 'data' in data and 'symbols' in data['data']:
-        return [s['symbol'].replace("_USDT", "USDT") for s in data['data']['symbols'] 
-                if s['quoteCurrency'] == 'USDT' and s['enable']]
-    logger.error("Failed to fetch symbols from Pionex")
+        symbols = [s['symbol'].replace("_USDT", "USDT") for s in data['data']['symbols'] 
+                   if s['quoteCurrency'] == 'USDT' and s['enable']]
+        logger.info(f"Fetched {len(symbols)} Pionex symbols: {symbols[:5]}...")
+        return symbols
+    logger.error("Failed to fetch symbols from Pionex - check API key or network")
     return []
 
 def fetch_binance_symbols():
     try:
         markets = binance.load_markets()
-        return [symbol for symbol in markets.keys() if symbol.endswith('USDT') and markets[symbol]['active']]
+        symbols = [symbol.replace('/', '') for symbol in markets.keys() if symbol.endswith('/USDT') and markets[symbol]['active']]
+        logger.info(f"Fetched {len(symbols)} Binance symbols: {symbols[:5]}...")
+        return symbols
     except Exception as e:
         logger.error(f"Failed to fetch Binance symbols: {e}")
         return []
 
+# Fetch and log symbols
 pionex_symbols = set(fetch_pionex_symbols())
 binance_symbols = set(fetch_binance_symbols())
 SELECTED_SYMBOLS = list(pionex_symbols.intersection(binance_symbols))
-logger.info(f"Initialized with {len(SELECTED_SYMBOLS)} symbols: {SELECTED_SYMBOLS[:5]}...")
+logger.info(f"Initialized with {len(SELECTED_SYMBOLS)} common symbols: {SELECTED_SYMBOLS[:5]}...")
 
 # Store active orders and last alerts
 active_orders = {}
 last_alert_messages = {}
-ALERT_COOLDOWN = 5  # Reduced to 5 minutes for testing
+ALERT_COOLDOWN = 5  # minutes
 
 # Pionex API Helper Functions (unchanged)
 def get_symbol_info(symbol):
@@ -263,11 +268,10 @@ def calculate_macd(df):
     return df
 
 def check_histogram_cross(df):
-    if len(df) < 3:  # Simplified to 3 rows for testing
+    if len(df) < 3:
         logger.warning(f"Not enough data for {df.name if hasattr(df, 'name') else 'unknown symbol'} to check histogram cross: {len(df)} rows")
         return False, False
     calculate_macd(df)
-    # Simplified condition for testing: just check last two bars
     hist_cross_over = df['histogram'].iloc[-1] > 0 and df['histogram'].iloc[-2] <= 0
     hist_cross_under = df['histogram'].iloc[-1] < 0 and df['histogram'].iloc[-2] >= 0
     logger.info(f"Histogram check for {df.name}: cross_over={hist_cross_over}, cross_under={hist_cross_under}, hist[-1]={df['histogram'].iloc[-1]}, hist[-2]={df['histogram'].iloc[-2]}")
@@ -500,7 +504,7 @@ async def handle_telegram_callback(update: Update, context: ContextTypes.DEFAULT
 async def check_alerts(bot: Bot):
     logger.info("Starting alert check cycle")
     if not SELECTED_SYMBOLS:
-        logger.warning("No symbols selected to check")
+        logger.error("No symbols selected to check - bot cannot proceed without symbols")
         return
     
     for symbol in SELECTED_SYMBOLS:

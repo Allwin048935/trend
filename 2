@@ -289,7 +289,7 @@ def find_pivot_points(series, length, left_length):
     
     return pivots_high, pivots_low
 
-def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLINEs):
+def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLINES):
     trendlines = []
     pivot_points = pivots.dropna()
     if len(pivot_points) < 2:
@@ -340,7 +340,6 @@ def plot_candles(df, symbol, title):
         long_ema = calculate_ema(df, 7)
         calculate_macd(df)
         
-        # Ensure histogram has enough data for colors
         if len(df['histogram']) < 2:
             logger.warning(f"Insufficient histogram data for {symbol}: {len(df['histogram'])} rows")
             return None

@@ -317,7 +317,9 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
         trendlines.append({
             'x1': x1, 'y1': y1,
             'x2': x_end, 'y2': y_end,
-            'slope': slope
+            'slope': slope,
+            'idx1': df.index.get_loc(idx1),  # Store integer index positions
+            'idx2': df.index.get_loc(idx2)
         })
     
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
@@ -363,13 +365,11 @@ def plot_candles(df, symbol, title):
         
         def trendline_to_series(df, tl):
             series = pd.Series(index=df.index, dtype=float)
-            # Use integer positions instead of searchsorted since index is now integer-based
-            start_idx = max(0, min(len(df) - 1, int((tl['x1'] - df['timestamp'].iloc[0]).total_seconds() / (3600 * 8))))
-            end_idx = min(len(df) - 1, max(start_idx, int((tl['x2'] - df['timestamp'].iloc[0]).total_seconds() / (3600 * 8))))
+            start_idx = tl['idx1']  # Use stored integer index
+            end_idx = min(len(df) - 1, tl['idx2'] + 50)  # Extend by 50 bars or to end
             logger.info(f"Trendline for {symbol}: start_idx={start_idx}, end_idx={end_idx}")
             
             if start_idx < len(df) and end_idx < len(df):
-                # Use index positions for slope calculation
                 time_diff = end_idx - start_idx
                 if time_diff != 0:
                     slope = (tl['y2'] - tl['y1']) / time_diff

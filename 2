@@ -109,7 +109,6 @@ def fetch_pionex_symbols():
     logger.error("Failed to fetch symbols from Pionex")
     return []
 
-# Fetch Binance symbols and filter
 def fetch_binance_symbols():
     try:
         markets = binance.load_markets()
@@ -118,15 +117,15 @@ def fetch_binance_symbols():
         logger.error(f"Failed to fetch Binance symbols: {e}")
         return []
 
-# Filter symbols available on both exchanges
 pionex_symbols = set(fetch_pionex_symbols())
 binance_symbols = set(fetch_binance_symbols())
 SELECTED_SYMBOLS = list(pionex_symbols.intersection(binance_symbols))
+logger.info(f"Initialized with {len(SELECTED_SYMBOLS)} symbols: {SELECTED_SYMBOLS[:5]}...")
 
 # Store active orders and last alerts
 active_orders = {}
 last_alert_messages = {}
-ALERT_COOLDOWN = 60  # minutes
+ALERT_COOLDOWN = 5  # Reduced to 5 minutes for testing
 
 # Pionex API Helper Functions (unchanged)
 def get_symbol_info(symbol):
@@ -247,10 +246,11 @@ def get_historical_data(symbol, interval, limit=75):
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
         df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        logger.info(f"Fetched {len(df)} rows for {symbol}")
         return df
     except ccxt.ExchangeError as e:
         logger.error(f"Binance fetch error for {symbol}: {e}")
-        return pd.DataFrame()  # Return empty DataFrame on error
+        return pd.DataFrame()
 
 def calculate_ema(df, period):
     return ta.trend.EMAIndicator(df['Close'], window=period).ema_indicator()
@@ -263,12 +263,14 @@ def calculate_macd(df):
     return df
 
 def check_histogram_cross(df):
-    if len(df) < 5:  # Need at least 5 rows for the check
-        logger.warning(f"Not enough data for {df.name if hasattr(df, 'name') else 'unknown symbol'} to check histogram cross")
+    if len(df) < 3:  # Simplified to 3 rows for testing
+        logger.warning(f"Not enough data for {df.name if hasattr(df, 'name') else 'unknown symbol'} to check histogram cross: {len(df)} rows")
         return False, False
     calculate_macd(df)
-    hist_cross_over = df['histogram'].iloc[-2] > df['histogram'].iloc[-3] 
-    hist_cross_under = df['histogram'].iloc[-2] < df['histogram'].iloc[-3]
+    # Simplified condition for testing: just check last two bars
+    hist_cross_over = df['histogram'].iloc[-1] > 0 and df['histogram'].iloc[-2] <= 0
+    hist_cross_under = df['histogram'].iloc[-1] < 0 and df['histogram'].iloc[-2] >= 0
+    logger.info(f"Histogram check for {df.name}: cross_over={hist_cross_over}, cross_under={hist_cross_under}, hist[-1]={df['histogram'].iloc[-1]}, hist[-2]={df['histogram'].iloc[-2]}")
     return hist_cross_over, hist_cross_under
 
 # Trendline Functions
@@ -318,102 +320,111 @@ def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLI
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
 def plot_candles(df, symbol, title):
-    if df.empty or len(df) < 5:  # Minimum data check
-        logger.warning(f"Not enough data to plot candles for {symbol}")
+    if df.empty or len(df) < 5:
+        logger.warning(f"Not enough data to plot candles for {symbol}: {len(df)} rows")
         return None
     
-    mpf_data = df[['Open', 'High', 'Low', 'Close']].copy()
-    mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
-    s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
-    
-    short_ema = calculate_ema(df, 3)
-    long_ema = calculate_ema(df, 7)
-    calculate_macd(df)
-    macd_colors = [
-        'green' if df['histogram'].iloc[i] > df['histogram'].iloc[i - 1] else 'red'
-        for i in range(1, len(df['histogram']))
-    ]
-    macd_colors.insert(0, 'gray')
-    
-    price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-    price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-    
-    primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
-    primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
-    secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
-    secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
-    
-    add_plots = [
-        mpf.make_addplot(short_ema, color='cyan', width=1.5, linestyle='-'),
-        mpf.make_addplot(long_ema, color='magenta', width=1.5, linestyle='-'),
-        mpf.make_addplot(df['histogram'], type='bar', color=macd_colors, panel=1, ylabel="MACD Histogram")
-    ]
-    
-    def trendline_to_series(df, tl):
-        series = pd.Series(index=df.index, dtype=float)
-        start_idx = df.index.searchsorted(tl['x1'])
-        end_idx = df.index.searchsorted(tl['x2'])
-        if end_idx >= len(df):
-            end_idx = len(df) - 1
+    try:
+        mpf_data = df[['Open', 'High', 'Low', 'Close']].copy()
+        mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
+        s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
         
-        if start_idx < len(df) and end_idx < len(df):
-            time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
-            if time_diff != 0:
-                slope = (tl['y2'] - tl['y1']) / time_diff
-                for i in range(start_idx, end_idx + 1):
-                    time_from_start = (df.index[i] - tl['x1']).total_seconds() / 3600
-                    series.iloc[i] = tl['y1'] + slope * time_from_start
-        return series
-    
-    for tl in primary_high_trendlines + primary_low_trendlines:
-        color = '#cf0a83' if tl['slope'] < 0 else '#027521'
-        trend_series = trendline_to_series(df, tl)
-        add_plots.append(mpf.make_addplot(trend_series, color=color, width=2))
-    
-    for tl in secondary_high_trendlines + secondary_low_trendlines:
-        color = 'red' if tl['slope'] < 0 else 'green'
-        trend_series = trendline_to_series(df, tl)
-        add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1))
-    
-    fig, axlist = mpf.plot(
-        mpf_data,
-        figratio=(10, 6),
-        type="candle",
-        style=s,
-        tight_layout=True,
-        datetime_format='%H:%M',
-        ylabel="Price ($)",
-        addplot=add_plots,
-        returnfig=True
-    )
-    
-    ax = axlist[0]
-    ax.set_title(f"{symbol} - {title}", fontsize=25, style='italic', fontfamily='sans-serif')
-    
-    buf = BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight')
-    buf.seek(0)
-    plt.close(fig)
-    return buf
+        short_ema = calculate_ema(df, 3)
+        long_ema = calculate_ema(df, 7)
+        calculate_macd(df)
+        macd_colors = [
+            'green' if df['histogram'].iloc[i] > df['histogram'].iloc[i - 1] else 'red'
+            for i in range(1, len(df['histogram']))
+        ]
+        macd_colors.insert(0, 'gray')
+        
+        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+        price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+        
+        primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+        primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+        secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
+        secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25)
+        
+        add_plots = [
+            mpf.make_addplot(short_ema, color='cyan', width=1.5, linestyle='-'),
+            mpf.make_addplot(long_ema, color='magenta', width=1.5, linestyle='-'),
+            mpf.make_addplot(df['histogram'], type='bar', color=macd_colors, panel=1, ylabel="MACD Histogram")
+        ]
+        
+        def trendline_to_series(df, tl):
+            series = pd.Series(index=df.index, dtype=float)
+            start_idx = df.index.searchsorted(tl['x1'])
+            end_idx = df.index.searchsorted(tl['x2'])
+            if end_idx >= len(df):
+                end_idx = len(df) - 1
+            
+            if start_idx < len(df) and end_idx < len(df):
+                time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
+                if time_diff != 0:
+                    slope = (tl['y2'] - tl['y1']) / time_diff
+                    for i in range(start_idx, end_idx + 1):
+                        time_from_start = (df.index[i] - tl['x1']).total_seconds() / 3600
+                        series.iloc[i] = tl['y1'] + slope * time_from_start
+            return series
+        
+        for tl in primary_high_trendlines + primary_low_trendlines:
+            color = '#cf0a83' if tl['slope'] < 0 else '#027521'
+            trend_series = trendline_to_series(df, tl)
+            add_plots.append(mpf.make_addplot(trend_series, color=color, width=2))
+        
+        for tl in secondary_high_trendlines + secondary_low_trendlines:
+            color = 'red' if tl['slope'] < 0 else 'green'
+            trend_series = trendline_to_series(df, tl)
+            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1))
+        
+        fig, axlist = mpf.plot(
+            mpf_data,
+            figratio=(10, 6),
+            type="candle",
+            style=s,
+            tight_layout=True,
+            datetime_format='%H:%M',
+            ylabel="Price ($)",
+            addplot=add_plots,
+            returnfig=True
+        )
+        
+        ax = axlist[0]
+        ax.set_title(f"{symbol} - {title}", fontsize=25, style='italic', fontfamily='sans-serif')
+        
+        buf = BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight')
+        buf.seek(0)
+        plt.close(fig)
+        logger.info(f"Chart successfully generated for {symbol}")
+        return buf
+    except Exception as e:
+        logger.error(f"Error plotting chart for {symbol}: {e}")
+        return None
 
 # Telegram Functions
 async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer, close_price):
     if image_buffer is None:
+        logger.warning(f"No image buffer for {symbol}, skipping message")
         return
     current_time = datetime.now()
     alert_key = f"{symbol}_{message}"
     last_alert = last_alert_messages.get(symbol, {})
     if (last_alert.get('message') == message and 
         current_time - last_alert.get('timestamp', datetime.min) < timedelta(minutes=ALERT_COOLDOWN)):
+        logger.info(f"Alert for {symbol} skipped due to cooldown")
         return
 
-    await bot.send_photo(chat_id=chat_id, photo=image_buffer)
-    keyboard = [[InlineKeyboardButton("BUY", callback_data=f"buy_{symbol}_{close_price}")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
-    
-    last_alert_messages[symbol] = {'message': message, 'timestamp': current_time}
-    logger.info(f"Telegram message sent for {symbol}")
+    try:
+        await bot.send_photo(chat_id=chat_id, photo=image_buffer)
+        keyboard = [[InlineKeyboardButton("BUY", callback_data=f"buy_{symbol}_{close_price}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
+        last_alert_messages[symbol] = {'message': message, 'timestamp': current_time}
+        logger.info(f"Telegram message sent for {symbol}")
+    except Exception as e:
+        logger.error(f"Failed to send Telegram message for {symbol}: {e}")
 
 async def handle_telegram_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -487,23 +498,35 @@ async def handle_telegram_callback(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text(f"Error processing request: {str(e)}")
 
 async def check_alerts(bot: Bot):
+    logger.info("Starting alert check cycle")
+    if not SELECTED_SYMBOLS:
+        logger.warning("No symbols selected to check")
+        return
+    
     for symbol in SELECTED_SYMBOLS:
+        logger.info(f"Processing {symbol}")
         try:
             historical_data = get_historical_data(symbol, interval)
             if historical_data.empty:
-                continue  # Skip if no data fetched
+                logger.warning(f"No historical data fetched for {symbol}")
+                continue
 
+            historical_data.name = symbol
             hist_cross_over, hist_cross_under = check_histogram_cross(historical_data)
-            historical_data.name = symbol  # Set name for logging
 
             if hist_cross_over:
+                logger.info(f"Buy signal detected for {symbol}")
                 message = f"Buy #{symbol}"
                 title = f'Histogram Cross Over {symbol}'
                 image_buffer = plot_candles(historical_data, symbol, title)
                 if image_buffer:
+                    logger.info(f"Sending alert for {symbol}")
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, historical_data['Close'].iloc[-1])
+                else:
+                    logger.warning(f"Failed to generate chart for {symbol}")
             
             if hist_cross_under and symbol in active_orders:
+                logger.info(f"Sell signal detected for {symbol}")
                 order_info = active_orders[symbol]
                 if order_info['side'] == 'BUY':
                     if cancel_order(symbol, order_info['order_id']):
@@ -518,11 +541,13 @@ async def check_alerts(bot: Bot):
                         logger.error(f"Failed to cancel SELL order for {symbol}")
         except Exception as e:
             logger.error(f"Error checking {symbol}: {e}")
+    logger.info("Alert check cycle completed")
 
 async def run_alert_loop(application: Application):
     bot = application.bot
     while True:
         await check_alerts(bot)
+        logger.info("Sleeping for 300 seconds")
         await asyncio.sleep(300)
 
 async def main():

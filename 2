@@ -121,7 +121,6 @@ def fetch_binance_symbols():
         logger.error(f"Failed to fetch Binance symbols: {e}")
         return []
 
-# Fetch and log symbols
 pionex_symbols = set(fetch_pionex_symbols())
 binance_symbols = set(fetch_binance_symbols())
 SELECTED_SYMBOLS = list(pionex_symbols.intersection(binance_symbols))
@@ -290,7 +289,7 @@ def find_pivot_points(series, length, left_length):
     
     return pivots_high, pivots_low
 
-def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLINES):
+def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLINEs):
     trendlines = []
     pivot_points = pivots.dropna()
     if len(pivot_points) < 2:
@@ -329,18 +328,26 @@ def plot_candles(df, symbol, title):
         return None
     
     try:
+        # Reset index to ensure integer-based indexing
+        df = df.reset_index()
         mpf_data = df[['Open', 'High', 'Low', 'Close']].copy()
+        logger.info(f"Preparing plot data for {symbol} with {len(mpf_data)} rows")
+        
         mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
         s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
         
         short_ema = calculate_ema(df, 3)
         long_ema = calculate_ema(df, 7)
         calculate_macd(df)
-        macd_colors = [
-            'green' if df['histogram'].iloc[i] > df['histogram'].iloc[i - 1] else 'red'
-            for i in range(1, len(df['histogram']))
-        ]
+        
+        # Ensure histogram has enough data for colors
+        if len(df['histogram']) < 2:
+            logger.warning(f"Insufficient histogram data for {symbol}: {len(df['histogram'])} rows")
+            return None
+        macd_colors = ['green' if df['histogram'].iloc[i] > df['histogram'].iloc[i - 1] else 'red' 
+                       for i in range(1, len(df['histogram']))]
         macd_colors.insert(0, 'gray')
+        logger.info(f"MACD colors generated for {symbol}: {len(macd_colors)} entries")
         
         price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
         price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
@@ -362,13 +369,14 @@ def plot_candles(df, symbol, title):
             end_idx = df.index.searchsorted(tl['x2'])
             if end_idx >= len(df):
                 end_idx = len(df) - 1
+            logger.info(f"Trendline for {symbol}: start_idx={start_idx}, end_idx={end_idx}")
             
             if start_idx < len(df) and end_idx < len(df):
                 time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
                 if time_diff != 0:
                     slope = (tl['y2'] - tl['y1']) / time_diff
                     for i in range(start_idx, end_idx + 1):
-                        time_from_start = (df.index[i] - tl['x1']).total_seconds() / 3600
+                        time_from_start = (df['timestamp'].iloc[i] - tl['x1']).total_seconds() / 3600
                         series.iloc[i] = tl['y1'] + slope * time_from_start
             return series
         

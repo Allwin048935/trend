@@ -40,8 +40,8 @@ logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
 interval = '8h'
-PRIMARY_TRENDLINE_LENGTH = 20
-SECONDARY_TRENDLINE_LENGTH = 10
+PRIMARY_TRENDLINE_LENGTH = 30
+SECONDARY_TRENDLINE_LENGTH = 15
 MAX_TRENDLINES = 3
 
 # Pionex API setup
@@ -129,7 +129,7 @@ logger.info(f"Initialized with {len(SELECTED_SYMBOLS)} common symbols: {SELECTED
 # Store active orders and last alerts
 active_orders = {}
 last_alert_messages = {}
-ALERT_COOLDOWN = 5  # minutes
+ALERT_COOLDOWN = 60  # minutes
 
 # Pionex API Helper Functions
 def get_symbol_info(symbol):
@@ -270,8 +270,8 @@ def check_histogram_cross(df):
         logger.warning(f"Not enough data for {df.name if hasattr(df, 'name') else 'unknown symbol'} to check histogram cross: {len(df)} rows")
         return False, False
     calculate_macd(df)
-    hist_cross_over = df['histogram'].iloc[-1] > 0 and df['histogram'].iloc[-2] <= 0
-    hist_cross_under = df['histogram'].iloc[-1] < 0 and df['histogram'].iloc[-2] >= 0
+    hist_cross_over = df['histogram'].iloc[-2] > df['histogram'].iloc[-3]
+    hist_cross_under = df['histogram'].iloc[-2] < df['histogram'].iloc[-3]
     logger.info(f"Histogram check for {df.name}: cross_over={hist_cross_over}, cross_under={hist_cross_under}, hist[-1]={df['histogram'].iloc[-1]}, hist[-2]={df['histogram'].iloc[-2]}")
     return hist_cross_over, hist_cross_under
 

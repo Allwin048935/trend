@@ -57,7 +57,7 @@ binance = ccxt.binance({
     'options': {'defaultType': 'future'}
 })
 
-# Pionex API Functions (unchanged)
+# Pionex API Functions
 def generate_signature(method, path, params, body=None):
     timestamp = str(int(time.time() * 1000))
     query_params = params.copy()
@@ -131,7 +131,7 @@ active_orders = {}
 last_alert_messages = {}
 ALERT_COOLDOWN = 5  # minutes
 
-# Pionex API Helper Functions (unchanged)
+# Pionex API Helper Functions
 def get_symbol_info(symbol):
     endpoint = "/api/v1/common/symbols"
     pionex_symbol = symbol.replace("USDT", "_USDT")
@@ -328,7 +328,6 @@ def plot_candles(df, symbol, title):
         return None
     
     try:
-        # Reset index to ensure integer-based indexing
         df = df.reset_index()
         mpf_data = df[['Open', 'High', 'Low', 'Close']].copy()
         logger.info(f"Preparing plot data for {symbol} with {len(mpf_data)} rows")
@@ -364,18 +363,18 @@ def plot_candles(df, symbol, title):
         
         def trendline_to_series(df, tl):
             series = pd.Series(index=df.index, dtype=float)
-            start_idx = df.index.searchsorted(tl['x1'])
-            end_idx = df.index.searchsorted(tl['x2'])
-            if end_idx >= len(df):
-                end_idx = len(df) - 1
+            # Use integer positions instead of searchsorted since index is now integer-based
+            start_idx = max(0, min(len(df) - 1, int((tl['x1'] - df['timestamp'].iloc[0]).total_seconds() / (3600 * 8))))
+            end_idx = min(len(df) - 1, max(start_idx, int((tl['x2'] - df['timestamp'].iloc[0]).total_seconds() / (3600 * 8))))
             logger.info(f"Trendline for {symbol}: start_idx={start_idx}, end_idx={end_idx}")
             
             if start_idx < len(df) and end_idx < len(df):
-                time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
+                # Use index positions for slope calculation
+                time_diff = end_idx - start_idx
                 if time_diff != 0:
                     slope = (tl['y2'] - tl['y1']) / time_diff
                     for i in range(start_idx, end_idx + 1):
-                        time_from_start = (df['timestamp'].iloc[i] - tl['x1']).total_seconds() / 3600
+                        time_from_start = i - start_idx
                         series.iloc[i] = tl['y1'] + slope * time_from_start
             return series
         

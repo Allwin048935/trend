@@ -40,8 +40,8 @@ logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
 interval = '8h'
-PRIMARY_TRENDLINE_LENGTH = 30
-SECONDARY_TRENDLINE_LENGTH = 15
+PRIMARY_TRENDLINE_LENGTH = 20
+SECONDARY_TRENDLINE_LENGTH = 10
 MAX_TRENDLINES = 3
 
 # Pionex API setup
@@ -379,12 +379,12 @@ def plot_candles(df, symbol, title):
         for tl in primary_high_trendlines + primary_low_trendlines:
             color = '#cf0a83' if tl['slope'] < 0 else '#027521'
             trend_series = trendline_to_series(df, tl)
-            add_plots.append(mpf.make_addplot(trend_series, color=color, width=2))
+            add_plots.append(mpf.make_addplot(trend_series, color=color, width=3))
         
         for tl in secondary_high_trendlines + secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
             trend_series = trendline_to_series(df, tl)
-            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1))
+            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=2))
         
         fig, axlist = mpf.plot(
             df_plot,

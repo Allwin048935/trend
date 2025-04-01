@@ -126,7 +126,7 @@ SELECTED_SYMBOLS = list(pionex_symbols.intersection(binance_symbols))
 # Store active orders and last alerts
 active_orders = {}
 last_alert_messages = {}
-ALERT_COOLDOWN = 5  # minutes
+ALERT_COOLDOWN = 60  # minutes
 
 # Pionex API Helper Functions
 def get_symbol_info(symbol):
@@ -237,7 +237,7 @@ def get_current_price(symbol):
     return None, None
 
 # Binance Data Functions
-def get_historical_data(symbol, interval, limit=75):
+def get_historical_data(symbol, interval, limit=100):
     try:
         ohlcv = binance.fetch_ohlcv(symbol, interval, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])

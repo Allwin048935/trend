@@ -43,7 +43,7 @@ interval = '2h'  # For trendline calculation
 CHECK_INTERVAL = '15m'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 20
 SECONDARY_TRENDLINE_LENGTH = 20
-MAX_TRENDLINES = 3
+MAX_TRENDLINES = 5
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"

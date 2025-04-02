@@ -28,7 +28,7 @@ file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.WARNING)  # Only show WARNING and ERROR in console
+console_handler.setLevel(logging.WARNING)
 console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 logger.handlers.clear()
@@ -39,7 +39,7 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '8h'
+interval = '1h'
 PRIMARY_TRENDLINE_LENGTH = 30
 SECONDARY_TRENDLINE_LENGTH = 20
 MAX_TRENDLINES = 3
@@ -125,8 +125,7 @@ SELECTED_SYMBOLS = list(pionex_symbols.intersection(binance_symbols))
 
 # Store active orders and last alerts
 active_orders = {}
-last_alert_messages = {}
-ALERT_COOLDOWN = 60  # minutes
+last_alert_messages = {}  # Now stores only "crossover" or "crossdown"
 
 # Pionex API Helper Functions
 def get_symbol_info(symbol):
@@ -156,11 +155,11 @@ def place_market_order(symbol, side, amount_usdt=13.0, quantity=None):
     params = {}
     symbol_info = get_symbol_info(symbol)
     if not symbol_info:
-        return None
+        return None, None
     pionex_symbol = symbol.replace("USDT", "_USDT")
     best_bid, best_ask = get_current_price(symbol)
     if not best_bid or not best_ask:
-        return None
+        return None, None
     quote_precision = int(symbol_info['quotePrecision'])
     base_precision = int(symbol_info['basePrecision'])
     min_amount = float(symbol_info['minAmount'])
@@ -263,8 +262,8 @@ def check_histogram_cross(df):
         logger.warning(f"Not enough data for {df.name if hasattr(df, 'name') else 'unknown symbol'} to check histogram cross: {len(df)} rows")
         return False, False
     calculate_macd(df)
-    hist_cross_over = df['histogram'].iloc[-2] > df['histogram'].iloc[-3]
-    hist_cross_under = df['histogram'].iloc[-2] < 0 and df['histogram'].iloc[-3]
+    hist_cross_over = df['histogram'].iloc[-2] > df['histogram'].iloc[-3] and df['histogram'].iloc[-3] < df['histogram'].iloc[-4]
+    hist_cross_under = df['histogram'].iloc[-2] < df['histogram'].iloc[-3] and df['histogram'].iloc[-3] > df['histogram'].iloc[-4]
     return hist_cross_over, hist_cross_under
 
 # Trendline Functions
@@ -319,7 +318,6 @@ def plot_candles(df, symbol, title):
         return None
     
     try:
-        # Prepare data for mplfinance
         df_plot = df.set_index('timestamp')
         df_plot = df_plot[['Open', 'High', 'Low', 'Close']].copy()
         
@@ -402,15 +400,15 @@ def plot_candles(df, symbol, title):
         return None
 
 # Telegram Functions
-async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer, close_price):
+async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer, close_price, alert_type):
     if image_buffer is None:
         logger.warning(f"No image buffer for {symbol}, skipping message")
         return
-    current_time = datetime.now()
-    alert_key = f"{symbol}_{message}"
-    last_alert = last_alert_messages.get(symbol, {})
-    if (last_alert.get('message') == message and 
-        current_time - last_alert.get('timestamp', datetime.min) < timedelta(minutes=ALERT_COOLDOWN)):
+    
+    # Check if the last alert type matches the current one
+    last_alert_type = last_alert_messages.get(symbol)
+    if last_alert_type == alert_type:
+        logger.info(f"Skipping repeated {alert_type} alert for {symbol}")
         return
 
     try:
@@ -418,7 +416,9 @@ async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: st
         keyboard = [[InlineKeyboardButton("BUY", callback_data=f"buy_{symbol}_{close_price}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
-        last_alert_messages[symbol] = {'message': message, 'timestamp': current_time}
+        # Update the last alert type
+        last_alert_messages[symbol] = alert_type
+        logger.info(f"Sent {alert_type} alert for {symbol}: {message}")
     except Exception as e:
         logger.error(f"Failed to send Telegram message for {symbol}: {e}")
 
@@ -508,11 +508,19 @@ async def check_alerts(bot: Bot):
                 title = f'Histogram Cross Over {symbol}'
                 image_buffer = plot_candles(historical_data, symbol, title)
                 if image_buffer:
-                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, historical_data['Close'].iloc[-1])
+                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
+                                              historical_data['Close'].iloc[-1], "crossover")
                 else:
                     logger.warning(f"Failed to generate chart for {symbol}")
             
             if hist_cross_under and symbol in active_orders:
+                message = f"Sell #{symbol}"
+                title = f'Histogram Cross Under {symbol}'
+                image_buffer = plot_candles(historical_data, symbol, title)
+                if image_buffer:
+                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
+                                              historical_data['Close'].iloc[-1], "crossdown")
+                
                 order_info = active_orders[symbol]
                 if order_info['side'] == 'BUY':
                     if cancel_order(symbol, order_info['order_id']):

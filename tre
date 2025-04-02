@@ -39,10 +39,10 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '8h'  # For trendline calculation
+interval = '30m'  # For trendline calculation
 CHECK_INTERVAL = '15m'  # For price cross check
-PRIMARY_TRENDLINE_LENGTH = 30
-SECONDARY_TRENDLINE_LENGTH = 20
+PRIMARY_TRENDLINE_LENGTH = 80
+SECONDARY_TRENDLINE_LENGTH = 80
 MAX_TRENDLINES = 3
 
 # Pionex API setup
@@ -237,7 +237,7 @@ def get_current_price(symbol):
     return None, None
 
 # Binance Data Functions
-def get_historical_data(symbol, interval, limit=100):
+def get_historical_data(symbol, interval, limit=150):
     try:
         ohlcv = binance.fetch_ohlcv(symbol, interval, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -264,7 +264,7 @@ def find_pivot_points(series, length, left_length):
     
     return pivots_high, pivots_low
 
-def calculate_trendlines(df, pivots, length, extension=50, max_lines=MAX_TRENDLINES):
+def calculate_trendlines(df, pivots, length, extension=150, max_lines=MAX_TRENDLINES):
     trendlines = []
     pivot_points = pivots.dropna()
     if len(pivot_points) < 2:

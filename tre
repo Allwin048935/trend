@@ -39,10 +39,10 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '4h'  # For trendline calculation
+interval = '2h'  # For trendline calculation
 CHECK_INTERVAL = '15m'  # For price cross check
-PRIMARY_TRENDLINE_LENGTH = 10
-SECONDARY_TRENDLINE_LENGTH = 10
+PRIMARY_TRENDLINE_LENGTH = 50
+SECONDARY_TRENDLINE_LENGTH = 50
 MAX_TRENDLINES = 3
 
 # Pionex API setup

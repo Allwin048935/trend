@@ -262,7 +262,7 @@ def check_histogram_cross(df):
         logger.warning(f"Not enough data for {df.name if hasattr(df, 'name') else 'unknown symbol'} to check histogram cross: {len(df)} rows")
         return False, False
     calculate_macd(df)
-    hist_cross_over = df['histogram'].iloc[-2] > df['histogram'].iloc[-3] and df['histogram'].iloc[-3] < df['histogram'].iloc[-4]
+    hist_cross_over = df['histogram'].iloc[-2] > df['histogram'].iloc[-3] and df['histogram'].iloc[-3] > df['histogram'].iloc[-4] and df['histogram'].iloc[-4] < df['histogram'].iloc[-5]
     hist_cross_under = df['histogram'].iloc[-2] < df['histogram'].iloc[-3] and df['histogram'].iloc[-3] > df['histogram'].iloc[-4]
     return hist_cross_over, hist_cross_under
 

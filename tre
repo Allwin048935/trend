@@ -298,11 +298,11 @@ def calculate_trendlines(df, pivots, length, extension=150, max_lines=MAX_TRENDL
     return trendlines[-max_lines:] if len(trendlines) > max_lines else trendlines
 
 def check_price_cross_trendlines(trendlines, df_15m):
-    if len(df_15m) < 2 or not trendlines:
+    if len(df_15m) < 3 or not trendlines:
         return False, False
     
-    last_close = df_15m['Close'].iloc[-1]
-    prev_close = df_15m['Close'].iloc[-2]
+    last_close = df_15m['Close'].iloc[-2]
+    prev_close = df_15m['Close'].iloc[-3]
     last_timestamp = df_15m['timestamp'].iloc[-1]
     
     cross_over = False
@@ -501,8 +501,8 @@ async def check_alerts(bot: Bot):
                 continue
 
             # Fetch 15m data for price cross check
-            historical_data_15m = get_historical_data(symbol, CHECK_INTERVAL, limit=2)
-            if historical_data_15m.empty or len(historical_data_15m) < 2:
+            historical_data_15m = get_historical_data(symbol, CHECK_INTERVAL, limit=5)
+            if historical_data_15m.empty or len(historical_data_15m) < 5:
                 logger.warning(f"No or insufficient 15m historical data fetched for {symbol}")
                 continue
 

@@ -1,7 +1,13 @@
 # config.py
 # Telegram bot tokens
 BUY_BOT_TOKEN = "7619077339:AAGvLzsABJRFKsv50TgI1XxMNhVvtED-E_4"  # Token for buy messages
-SELL_BOT_TOKEN = "7291265041:AAHAsg1hnD1fe4eINhfd-86425ReI04lYJY"  # Token for sell messages
+SELL_BOT_TOKEN = "7291265041:AAHAsg1hnD1fe4eINhfd-86425ReI04lYJY" 
+
+# Telegram bot tokens
+BUY_BOT_TOKEN = "7619077339:AAGvLzsABJRFKsv50TgI1XxMNhVvtED-E_4"  # Token for buy messages
+SELL_BOT_TOKEN = "7291265041:AAHAsg1hnD1fe4eINhfd-86425ReI04lYJY" 
+
+ # Token for sell messages
 CHAT_ID = "1385370555"  # Your Telegram chat ID
 
 # Pionex API credentials

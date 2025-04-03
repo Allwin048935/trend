@@ -5,7 +5,7 @@ SELL_BOT_TOKEN = "7291265041:AAHAsg1hnD1fe4eINhfd-86425ReI04lYJY"
 
 # Telegram bot tokens
 #TELEGRAM_TOKEN = "7619077339:AAGvLzsABJRFKsv50TgI1XxMNhVvtED-E_4"  # Token for buy messages
-TELEGRAM_TOKEN = "7291265041:AAHAsg1hnD1fe4eINhfd-86425ReI04lYJY" 
+TELEGRAM_TOKEN = "8066951467:AAHOaFDL9kixcdwtjbwb-szDgnl8R9Vz8AI" 
 
  # Token for sell messages
 CHAT_ID = "1385370555"  # Your Telegram chat ID

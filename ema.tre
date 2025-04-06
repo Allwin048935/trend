@@ -42,7 +42,7 @@ logging.getLogger('ccxt').setLevel(logging.WARNING)
 interval = '8h'  # For trendline calculation
 CHECK_INTERVAL = '8h'  # For EMA cross check
 PRIMARY_TRENDLINE_LENGTH = 20
-SECONDARY_TRENDLINE_LENGTH = 20
+SECONDARY_TRENDLINE_LENGTH = 10
 MAX_TRENDLINES = 3
 SHORT_EMA_PERIOD = 3
 LONG_EMA_PERIOD = 7

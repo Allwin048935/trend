@@ -39,14 +39,15 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '15m'  # For trendline calculation
-CHECK_INTERVAL = '15m'  # For EMA cross check
+interval = '8h'  # For trendline calculation
+CHECK_INTERVAL = '8h'  # For EMA cross check
 PRIMARY_TRENDLINE_LENGTH = 20
 SECONDARY_TRENDLINE_LENGTH = 20
 MAX_TRENDLINES = 3
 SHORT_EMA_PERIOD = 3
 LONG_EMA_PERIOD = 7
-COOLDOWN_PERIOD = 900  # 15 minutes in seconds
+COOLDOWN_PERIOD = 2*3600  # 15 minutes in seconds
+SLEEP_CHECK = 60  # 5 minutes in seconds
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
@@ -94,7 +95,7 @@ def api_request(method, endpoint, params=None, body=None):
         if method == "GET":
             response = requests.get(url, headers=headers, params=params)
         elif method == "POST":
-            response = requests.post(url, headers=headers, params=params, data=json.dumps(body, separators=(',', ':')))
+            response = requests.post(url, headers headers=headers, params=params, data=json.dumps(body, separators=(',', ':')))
         elif method == "DELETE":
             response = requests.delete(url, headers=headers, params=params, data=json.dumps(body, separators=(',', ':')))
         response.raise_for_status()
@@ -127,9 +128,9 @@ pionex_symbols = set(fetch_pionex_symbols())
 binance_symbols = set(fetch_binance_symbols())
 SELECTED_SYMBOLS = list(pionex_symbols.intersection(binance_symbols))
 
-# Store active orders and last alert times
+# Store active orders and last alert info
 active_orders = {}
-last_alert_times = {}  # Stores timestamp of last alert for each symbol (fixed typo here)
+last_alerts = {}  # Stores {'time': timestamp, 'type': 'crossover' or 'crossdown'} for each symbol
 
 # Pionex API Helper Functions
 def get_symbol_info(symbol):
@@ -312,10 +313,7 @@ def check_ema_cross(df):
     prev_short = short_ema.iloc[-3]
     prev_long = long_ema.iloc[-3]
     
-    # Check crossover (short EMA crosses above long EMA)
     cross_over = prev_short <= prev_long and last_short > last_long
-    
-    # Check crossunder (short EMA crosses below long EMA)
     cross_under = prev_short >= prev_long and last_short < last_long
     
     return cross_over, cross_under
@@ -402,23 +400,29 @@ def plot_candles(df, symbol, title):
 async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer, close_price, alert_type):
     if image_buffer is None:
         logger.warning(f"No image buffer for {symbol}, skipping message")
-        return
+        return False
     
     current_time = time.time()
-    last_alert_time = last_alert_times.get(symbol, 0)
-    if current_time - last_alert_time < COOLDOWN_PERIOD:
-        logger.info(f"Skipping alert for {symbol} - within cooldown period")
-        return
+    last_alert = last_alerts.get(symbol, {'time': 0, 'type': None})
+    last_alert_time = last_alert['time']
+    last_alert_type = last_alert['type']
+
+    # Apply cooldown only if it's the same alert type
+    if alert_type == last_alert_type and (current_time - last_alert_time < COOLDOWN_PERIOD):
+        logger.info(f"Skipping {alert_type} alert for {symbol} - within cooldown period for same type")
+        return False
 
     try:
         await bot.send_photo(chat_id=chat_id, photo=image_buffer)
-        keyboard = [[InlineKeyboardButton("BUY", callback_data=f"buy_{symbol}_{close_price}")]]
+        keyboard = [[InlineKeyboardButton("BUY", callback_data=f"buy_{symbol}_{close_price}")]] if alert_type == "crossover" else []
         reply_markup = InlineKeyboardMarkup(keyboard)
         await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
-        last_alert_times[symbol] = current_time
+        last_alerts[symbol] = {'time': current_time, 'type': alert_type}
         logger.info(f"Sent {alert_type} alert for {symbol}: {message}")
+        return True
     except Exception as e:
         logger.error(f"Failed to send Telegram message for {symbol}: {e}")
+        return False
 
 async def handle_telegram_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -509,31 +513,70 @@ async def check_alerts(bot: Bot):
                 title = f'Short EMA Cross Over Long EMA {symbol}'
                 image_buffer = plot_candles(historical_data_15m, symbol, title)
                 if image_buffer:
-                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
-                                              historical_data_15m['Close'].iloc[-1], "crossover")
-                else:
-                    logger.warning(f"Failed to generate chart for {symbol}")
+                    sent = await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
+                                                      historical_data_15m['Close'].iloc[-1], "crossover")
+                    if sent:
+                        # Sleep for 5 minutes and recheck
+                        await asyncio.sleep(SLEEP_CHECK)
+                        new_data = get_historical_data(symbol, CHECK_INTERVAL, limit=100)
+                        if new_data.empty or len(new_data) < 5:
+                            logger.warning(f"Failed to fetch new data for {symbol} after sleep")
+                            continue
+                        new_cross_over, new_cross_under = check_ema_cross(new_data)
+                        if new_cross_under and symbol in active_orders:
+                            message = f"Sell #{symbol}"
+                            title = f'Short EMA Cross Under Long EMA {symbol} (Post-Sleep Check)'
+                            new_image_buffer = plot_candles(new_data, symbol, title)
+                            if new_image_buffer:
+                                await send_telegram_message(bot, config.CHAT_ID, symbol, message, new_image_buffer, 
+                                                           new_data['Close'].iloc[-1], "crossdown")
+                                order_info = active_orders.get(symbol)
+                                if order_info and order_info['side'] == 'BUY':
+                                    if cancel_order(symbol, order_info['order_id']):
+                                        sell_order_id, _ = place_market_order(symbol, "SELL", quantity=order_info['quantity'])
+                                        if sell_order_id:
+                                            del active_orders[symbol]
+                                            await bot.send_message(chat_id=config.CHAT_ID, 
+                                                                  text=f"Position closed with SELL for {symbol} due to EMA cross under after sleep")
+                                        else:
+                                            logger.error(f"Failed to place market SELL for {symbol}")
+                                    else:
+                                        logger.error(f"Failed to cancel SELL order for {symbol}")
             
             if cross_under and symbol in active_orders:
                 message = f"Sell #{symbol}"
                 title = f'Short EMA Cross Under Long EMA {symbol}'
                 image_buffer = plot_candles(historical_data_15m, symbol, title)
                 if image_buffer:
-                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
-                                              historical_data_15m['Close'].iloc[-1], "crossdown")
-                
-                order_info = active_orders[symbol]
-                if order_info['side'] == 'BUY':
-                    if cancel_order(symbol, order_info['order_id']):
-                        sell_order_id, _ = place_market_order(symbol, "SELL", quantity=order_info['quantity'])
-                        if sell_order_id:
-                            del active_orders[symbol]
-                            await bot.send_message(chat_id=config.CHAT_ID, 
-                                                 text=f"Position closed with SELL for {symbol} due to EMA cross under")
-                        else:
-                            logger.error(f"Failed to place market SELL for {symbol}")
-                    else:
-                        logger.error(f"Failed to cancel SELL order for {symbol}")
+                    sent = await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
+                                                      historical_data_15m['Close'].iloc[-1], "crossdown")
+                    if sent:
+                        order_info = active_orders[symbol]
+                        if order_info['side'] == 'BUY':
+                            if cancel_order(symbol, order_info['order_id']):
+                                sell_order_id, _ = place_market_order(symbol, "SELL", quantity=order_info['quantity'])
+                                if sell_order_id:
+                                    del active_orders[symbol]
+                                    await bot.send_message(chat_id=config.CHAT_ID, 
+                                                         text=f"Position closed with SELL for {symbol} due to EMA cross under")
+                                else:
+                                    logger.error(f"Failed to place market SELL for {symbol}")
+                            else:
+                                logger.error(f"Failed to cancel SELL order for {symbol}")
+                        # Sleep for 5 minutes and recheck
+                        await asyncio.sleep(SLEEP_CHECK)
+                        new_data = get_historical_data(symbol, CHECK_INTERVAL, limit=100)
+                        if new_data.empty or len(new_data) < 5:
+                            logger.warning(f"Failed to fetch new data for {symbol} after sleep")
+                            continue
+                        new_cross_over, new_cross_under = check_ema_cross(new_data)
+                        if new_cross_over:
+                            message = f"Buy #{symbol}"
+                            title = f'Short EMA Cross Over Long EMA {symbol} (Post-Sleep Check)'
+                            new_image_buffer = plot_candles(new_data, symbol, title)
+                            if new_image_buffer:
+                                await send_telegram_message(bot, config.CHAT_ID, symbol, message, new_image_buffer, 
+                                                           new_data['Close'].iloc[-1], "crossover")
         except Exception as e:
             logger.error(f"Error checking {symbol}: {e}")
 

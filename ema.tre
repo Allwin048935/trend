@@ -39,13 +39,14 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '2h'  # For trendline calculation
-CHECK_INTERVAL = '2h'  # For EMA cross check
+interval = '8h'  # For trendline calculation
+CHECK_INTERVAL = '8h'  # For EMA cross check
 PRIMARY_TRENDLINE_LENGTH = 20
 SECONDARY_TRENDLINE_LENGTH = 20
 MAX_TRENDLINES = 3
 SHORT_EMA_PERIOD = 3
 LONG_EMA_PERIOD = 7
+COOLDOWN_PERIOD = 2*3600 
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
@@ -126,9 +127,9 @@ pionex_symbols = set(fetch_pionex_symbols())
 binance_symbols = set(fetch_binance_symbols())
 SELECTED_SYMBOLS = list(pionex_symbols.intersection(binance_symbols))
 
-# Store active orders and last alerts
+# Store active orders and last alert times
 active_orders = {}
-last_alert_messages = {}  # Stores "crossover" or "crossdown"
+last_alert  = {}  # Stores timestamp of last alert for each symbol
 
 # Pionex API Helper Functions
 def get_symbol_info(symbol):
@@ -403,9 +404,10 @@ async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: st
         logger.warning(f"No image buffer for {symbol}, skipping message")
         return
     
-    last_alert_type = last_alert_messages.get(symbol)
-    if last_alert_type == alert_type:
-        logger.info(f"Skipping repeated {alert_type} alert for {symbol}")
+    current_time = time.time()
+    last_alert_time = last_alert_times.get(symbol, 0)
+    if current_time - last_alert_time < COOLDOWN_PERIOD:
+        logger.info(f"Skipping alert for {symbol} - within cooldown period")
         return
 
     try:
@@ -413,7 +415,7 @@ async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: st
         keyboard = [[InlineKeyboardButton("BUY", callback_data=f"buy_{symbol}_{close_price}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
-        last_alert_messages[symbol] = alert_type
+        last_alert_times[symbol] = current_time
         logger.info(f"Sent {alert_type} alert for {symbol}: {message}")
     except Exception as e:
         logger.error(f"Failed to send Telegram message for {symbol}: {e}")

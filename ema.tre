@@ -39,8 +39,8 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '15m'  # For trendline calculation
-CHECK_INTERVAL = '15m'  # For EMA cross check
+interval = '2h'  # For trendline calculation
+CHECK_INTERVAL = '2h'  # For EMA cross check
 PRIMARY_TRENDLINE_LENGTH = 20
 SECONDARY_TRENDLINE_LENGTH = 20
 MAX_TRENDLINES = 3

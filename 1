@@ -43,7 +43,8 @@ interval = '15m'  # For trendline calculation
 CHECK_INTERVAL = '15m'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 20
 SECONDARY_TRENDLINE_LENGTH = 20
-MAX_TRENDLINES = 3
+INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
+MAX_STORED_TRENDLINES = 10  # Maximum total stored trendlines
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
@@ -58,11 +59,11 @@ binance = ccxt.binance({
     'options': {'defaultType': 'future'}
 })
 
-# Global storage for trendlines
-stored_trendlines = {}  # Format: {symbol: {'primary_high': [], 'primary_low': [], 'secondary_high': [], 'secondary_low': []}}
-alerted_pairs = {}  # Format: {symbol: set of (start_timestamp, end_timestamp) tuples}
+# Store trendlines and active orders
+stored_trendlines = {}  # Format: {symbol: {'lines': [...], 'stored_time': datetime}}
+active_orders = {}
 
-# Pionex API Functions (unchanged)
+# Pionex API Functions
 def generate_signature(method, path, params, body=None):
     timestamp = str(int(time.time() * 1000))
     query_params = params.copy()
@@ -128,11 +129,7 @@ pionex_symbols = set(fetch_pionex_symbols())
 binance_symbols = set(fetch_binance_symbols())
 SELECTED_SYMBOLS = list(pionex_symbols.intersection(binance_symbols))
 
-# Store active orders and last alerts
-active_orders = {}
-last_alert_messages = {}  # Stores "crossover" or "crossdown"
-
-# Pionex API Helper Functions (unchanged)
+# Pionex API Helper Functions
 def get_symbol_info(symbol):
     endpoint = "/api/v1/common/symbols"
     pionex_symbol = symbol.replace("USDT", "_USDT")
@@ -268,18 +265,15 @@ def find_pivot_points(series, length, left_length):
     
     return pivots_high, pivots_low
 
-def calculate_trendlines(df, pivots, length, extension=150, max_lines=MAX_TRENDLINES, stored_lines=None):
-    trendlines = stored_lines if stored_lines is not None else []
+def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITIAL_MAX_TRENDLINES):
+    trendlines = []
     pivot_points = pivots.dropna()
     if len(pivot_points) < 2:
-        return trendlines[:max_lines]
+        return trendlines
     
     timestamps = df['timestamp']
-    first_timestamp = timestamps.iloc[0]
     last_timestamp = timestamps.iloc[-1]
     
-    # Calculate new potential trendlines
-    new_trendlines = []
     for i in range(1, len(pivot_points)):
         idx1 = pivot_points.index[i-1]
         idx2 = pivot_points.index[i]
@@ -289,29 +283,23 @@ def calculate_trendlines(df, pivots, length, extension=150, max_lines=MAX_TRENDL
         y1 = pivot_points.iloc[i-1]
         y2 = pivot_points.iloc[i]
         
-        # Only consider trendlines within data limits
-        if x1 < first_timestamp or x2 > last_timestamp:
-            continue
-            
         time_diff = (x2 - x1).total_seconds() / 3600
         slope = (y2 - y1) / time_diff if time_diff != 0 else 0
         
-        x_end = min(timestamps.iloc[-1] + pd.Timedelta(minutes=15 * extension), last_timestamp)
+        # Extend 3 days from last timestamp
+        x_end = last_timestamp + pd.Timedelta(days=extension_days)
         extension_time = (x_end - x2).total_seconds() / 3600
         y_end = y2 + slope * extension_time
         
-        new_trendlines.append({
+        trendlines.append({
             'x1': x1, 'y1': y1,
             'x2': x_end, 'y2': y_end,
             'slope': slope,
-            'start_idx': idx1,
-            'end_idx': idx2
+            'timestamp': x2  # Store creation timestamp for ordering
         })
     
-    # Combine stored and new trendlines, keeping newest within max_lines
-    all_trendlines = trendlines + new_trendlines
-    all_trendlines.sort(key=lambda x: x['end_idx'] if 'end_idx' in x else -1, reverse=True)
-    return all_trendlines[:max_lines]
+    # Limit to initial_max only for the first calculation
+    return trendlines[:initial_max] if len(trendlines) > initial_max else trendlines
 
 def check_price_cross_trendlines(trendlines, df_15m):
     if len(df_15m) < 3 or not trendlines:
@@ -371,16 +359,26 @@ def plot_candles(df, symbol, title):
                         series.iloc[i] = tl['y1'] + slope * time_from_start
             return series
         
-        trendline_sets = stored_trendlines.get(symbol, {})
-        for tl_type, color, linestyle in [
-            ('primary_high', '#cf0a83', '-'),
-            ('primary_low', '#027521', '-'),
-            ('secondary_high', 'red', '--'),
-            ('secondary_low', 'green', '--')
-        ]:
-            for tl in trendline_sets.get(tl_type, []):
+        # Plot stored trendlines if they exist
+        if symbol in stored_trendlines:
+            for tl in stored_trendlines[symbol]['lines']:
+                color = '#cf0a83' if tl['slope'] < 0 else '#027521'
                 trend_series = trendline_to_series(df, tl)
-                add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle=linestyle, width=2.5 if linestyle == '-' else 1.5))
+                add_plots.append(mpf.make_addplot(trend_series, color=color, width=2.5))
+        
+        # Plot new potential trendlines as dashed lines
+        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+        price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+        
+        primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+        primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+        secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+        secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+        
+        for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
+            color = 'red' if tl['slope'] < 0 else 'green'
+            trend_series = trendline_to_series(df, tl)
+            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1.5))
         
         fig, axlist = mpf.plot(
             df_plot,
@@ -407,23 +405,17 @@ def plot_candles(df, symbol, title):
         return None
 
 # Telegram Functions
-async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer, close_price, alert_type):
+async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer, close_price):
     if image_buffer is None:
         logger.warning(f"No image buffer for {symbol}, skipping message")
         return
     
-    last_alert_type = last_alert_messages.get(symbol)
-    if last_alert_type == alert_type:
-        logger.info(f"Skipping repeated {alert_type} alert for {symbol}")
-        return
-
     try:
         await bot.send_photo(chat_id=chat_id, photo=image_buffer)
         keyboard = [[InlineKeyboardButton("BUY", callback_data=f"buy_{symbol}_{close_price}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
-        last_alert_messages[symbol] = alert_type
-        logger.info(f"Sent {alert_type} alert for {symbol}: {message}")
+        logger.info(f"Sent alert for {symbol}: {message}")
     except Exception as e:
         logger.error(f"Failed to send Telegram message for {symbol}: {e}")
 
@@ -500,13 +492,11 @@ async def check_alerts(bot: Bot):
     
     for symbol in SELECTED_SYMBOLS:
         try:
-            # Fetch 8h data for trendlines
             historical_data_8h = get_historical_data(symbol, interval, limit=100)
             if historical_data_8h.empty:
                 logger.warning(f"No 8h historical data fetched for {symbol}")
                 continue
 
-            # Fetch 15m data for price cross check
             historical_data_15m = get_historical_data(symbol, CHECK_INTERVAL, limit=5)
             if historical_data_15m.empty or len(historical_data_15m) < 5:
                 logger.warning(f"No or insufficient 15m historical data fetched for {symbol}")
@@ -515,33 +505,23 @@ async def check_alerts(bot: Bot):
             historical_data_8h.name = symbol
             historical_data_15m.name = symbol
 
-            # Initialize trendline storage for symbol if not exists
-            if symbol not in stored_trendlines:
-                stored_trendlines[symbol] = {
-                    'primary_high': [],
-                    'primary_low': [],
-                    'secondary_high': [],
-                    'secondary_low': []
-                }
-            if symbol not in alerted_pairs:
-                alerted_pairs[symbol] = set()
-
-            # Calculate and store trendlines
+            # Calculate new potential trendlines
             price_high_pivots, price_low_pivots = find_pivot_points(historical_data_8h['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
             price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(historical_data_8h['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
             
-            stored_trendlines[symbol]['primary_high'] = calculate_trendlines(historical_data_8h, price_high_pivots, PRIMARY_TRENDLINE_LENGTH, stored_lines=stored_trendlines[symbol]['primary_high'])
-            stored_trendlines[symbol]['primary_low'] = calculate_trendlines(historical_data_8h, price_low_pivots, PRIMARY_TRENDLINE_LENGTH, stored_lines=stored_trendlines[symbol]['primary_low'])
-            stored_trendlines[symbol]['secondary_high'] = calculate_trendlines(historical_data_8h, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH, 25, stored_lines=stored_trendlines[symbol]['secondary_high'])
-            stored_trendlines[symbol]['secondary_low'] = calculate_trendlines(historical_data_8h, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH, 25, stored_lines=stored_trendlines[symbol]['secondary_low'])
+            primary_high_trendlines = calculate_trendlines(historical_data_8h, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+            primary_low_trendlines = calculate_trendlines(historical_data_8h, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+            secondary_high_trendlines = calculate_trendlines(historical_data_8h, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+            secondary_low_trendlines = calculate_trendlines(historical_data_8h, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
             
-            all_trendlines = (stored_trendlines[symbol]['primary_high'] + 
-                            stored_trendlines[symbol]['primary_low'] + 
-                            stored_trendlines[symbol]['secondary_high'] + 
-                            stored_trendlines[symbol]['secondary_low'])
+            # Combine stored and new trendlines for checking
+            current_stored = stored_trendlines.get(symbol, {'lines': [], 'stored_time': None})
+            all_trendlines = (current_stored['lines'] + 
+                            primary_high_trendlines + primary_low_trendlines + 
+                            secondary_high_trendlines + secondary_low_trendlines)
 
-            # Check price crosses
             cross_over, cross_under = check_price_cross_trendlines(all_trendlines, historical_data_15m)
+            current_time = datetime.now()
 
             if cross_over:
                 message = f"Buy #{symbol}"
@@ -549,7 +529,17 @@ async def check_alerts(bot: Bot):
                 image_buffer = plot_candles(historical_data_8h, symbol, title)
                 if image_buffer:
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
-                                              historical_data_15m['Close'].iloc[-1], "crossover")
+                                              historical_data_15m['Close'].iloc[-1])
+                    # Store new trendlines on every crossover
+                    new_lines = primary_high_trendlines + primary_low_trendlines
+                    updated_lines = current_stored['lines'] + new_lines
+                    # Sort by timestamp and limit to MAX_STORED_TRENDLINES
+                    if len(updated_lines) > MAX_STORED_TRENDLINES:
+                        updated_lines = sorted(updated_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
+                    stored_trendlines[symbol] = {
+                        'lines': updated_lines,
+                        'stored_time': current_time
+                    }
                 else:
                     logger.warning(f"Failed to generate chart for {symbol}")
             
@@ -559,7 +549,7 @@ async def check_alerts(bot: Bot):
                 image_buffer = plot_candles(historical_data_8h, symbol, title)
                 if image_buffer:
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
-                                              historical_data_15m['Close'].iloc[-1], "crossdown")
+                                              historical_data_15m['Close'].iloc[-1])
                 
                 order_info = active_orders[symbol]
                 if order_info['side'] == 'BUY':

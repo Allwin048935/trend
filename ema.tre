@@ -39,15 +39,15 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '15m'  # For trendline calculation
-CHECK_INTERVAL = '15m'  # For EMA cross check
+interval = '8h'  # For trendline calculation
+CHECK_INTERVAL = '8h'  # For EMA cross check
 PRIMARY_TRENDLINE_LENGTH = 20
-SECONDARY_TRENDLINE_LENGTH = 20
+SECONDARY_TRENDLINE_LENGTH = 10
 MAX_TRENDLINES = 3
 SHORT_EMA_PERIOD = 3
 LONG_EMA_PERIOD = 7
-COOLDOWN_PERIOD = 900  # 15 minutes in seconds
-SLEEP_CHECK = 300  # 5 minutes in seconds
+COOLDOWN_PERIOD = 2*3600  # 15 minutes in seconds
+SLEEP_CHECK = 60  # 5 minutes in seconds
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"

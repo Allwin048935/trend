@@ -472,6 +472,8 @@ async def check_alerts(bot: Bot):
             if ema_cross_over and symbol not in active_orders:
                 last_alert = last_alert_times.get(symbol)
                 if last_alert is None or (current_time - last_alert) >= ALERT_COOLDOWN:
+                    last_alert_times[symbol] = current_time  # Update timestamp immediately on EMA crossover
+                    logger.info(f"EMA Crossover Up detected for {symbol}, timestamp updated")
                     buy_order_id, buy_quantity = place_market_order(symbol, "BUY")
                     if buy_order_id and buy_quantity:
                         best_bid, _ = get_current_price(symbol)
@@ -495,7 +497,6 @@ async def check_alerts(bot: Bot):
                                     image_buffer = plot_candles(historical_data_2h, symbol, title)
                                     if image_buffer:
                                         await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer)
-                                        last_alert_times[symbol] = current_time  # Update last alert time
                                         new_lines = primary_high_trendlines + primary_low_trendlines
                                         updated_lines = current_stored['lines'] + new_lines
                                         if len(updated_lines) > MAX_STORED_TRENDLINES:

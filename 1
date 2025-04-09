@@ -316,8 +316,8 @@ def check_price_cross_trendlines(trendlines, df_15m):
     if len(df_15m) < 3 or not trendlines:
         return False, False
     
-    last_close = df_15m['Close'].iloc[-1]
-    prev_close = df_15m['Close'].iloc[-2]
+    last_close = df_15m['Close'].iloc[-2]
+    prev_close = df_15m['Close'].iloc[-3]
     last_timestamp = df_15m['timestamp'].iloc[-1]
     
     cross_over = False
@@ -449,8 +449,8 @@ async def check_alerts(bot: Bot):
             historical_data_15m.name = symbol
 
             # EMA Crossover Check (using 2h interval) - only for sell condition
-            short_period = 5  # Short EMA period
-            long_period = 10   # Long EMA period
+            short_period = 3  # Short EMA period
+            long_period = 7   # Long EMA period
             _, ema_cross_under = check_ema_crossover(historical_data_2h, short_period, long_period)
 
             # Trendline Calculations

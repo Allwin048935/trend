@@ -43,7 +43,7 @@ PRIMARY_TRENDLINE_LENGTH = 15
 SECONDARY_TRENDLINE_LENGTH = 15
 INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
 MAX_STORED_TRENDLINES = 10  # Maximum total stored trendlines
-ALERT_COOLDOWN = timedelta(hours=2)  # Cooldown period matching EMA interval
+ALERT_COOLDOWN = timedelta(hours=2)  # Cooldown period matching interval
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
@@ -446,10 +446,10 @@ async def check_alerts(bot: Bot):
             historical_data_2h.name = symbol
             historical_data_15m.name = symbol
 
-            # EMA Crossover Check (using 2h interval)
+            # EMA Crossover Check (using 2h interval) - only for sell condition
             short_period = 5  # Short EMA period
             long_period = 10   # Long EMA period
-            ema_cross_over, ema_cross_under = check_ema_crossover(historical_data_2h, short_period, long_period)
+            _, ema_cross_under = check_ema_crossover(historical_data_2h, short_period, long_period)
 
             # Trendline Calculations
             price_high_pivots, price_low_pivots = find_pivot_points(historical_data_2h['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
@@ -468,12 +468,12 @@ async def check_alerts(bot: Bot):
             price_cross_over, price_cross_under = check_price_cross_trendlines(all_trendlines, historical_data_15m)
             current_time = datetime.now()
 
-            # Buy Logic: EMA Crossover Up with Cooldown
-            if ema_cross_over and symbol not in active_orders:
+            # Buy Logic: Price Cross Over Trendline with Cooldown
+            if price_cross_over and symbol not in active_orders:
                 last_alert = last_alert_times.get(symbol)
                 if last_alert is None or (current_time - last_alert) >= ALERT_COOLDOWN:
-                    last_alert_times[symbol] = current_time  # Update timestamp immediately on EMA crossover
-                    logger.info(f"EMA Crossover Up detected for {symbol}, timestamp updated")
+                    last_alert_times[symbol] = current_time  # Update timestamp immediately on price crossover
+                    logger.info(f"Price Cross Over Trendline detected for {symbol}, timestamp updated")
                     buy_order_id, buy_quantity = place_market_order(symbol, "BUY")
                     if buy_order_id and buy_quantity:
                         best_bid, _ = get_current_price(symbol)
@@ -492,15 +492,15 @@ async def check_alerts(bot: Bot):
                                         'quantity': sell_quantity,
                                         'entry_price': entry_price
                                     }
-                                    message = f"Buy #{symbol} - EMA Crossover Up"
-                                    title = f'EMA Crossover Up {symbol}'
+                                    message = f"Buy #{symbol} - Price Cross Over Trendline"
+                                    title = f'Price Cross Over {symbol}'
                                     image_buffer = plot_candles(historical_data_2h, symbol, title)
                                     if image_buffer:
                                         await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer)
                                         new_lines = primary_high_trendlines + primary_low_trendlines
                                         updated_lines = current_stored['lines'] + new_lines
                                         if len(updated_lines) > MAX_STORED_TRENDLINES:
-                                            updated_lines = sorted(updated_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
+                                            updated_lines = sorted(updated_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINE_LENGTH:]
                                         stored_trendlines[symbol] = {
                                             'lines': updated_lines,
                                             'stored_time': current_time

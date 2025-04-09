@@ -43,7 +43,7 @@ PRIMARY_TRENDLINE_LENGTH = 15
 SECONDARY_TRENDLINE_LENGTH = 15
 INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
 MAX_STORED_TRENDLINES = 10  # Maximum total stored trendlines
-ALERT_COOLDOWN = timedelta(hours=2)  # Cooldown period matching interval
+ALERT_COOLDOWN = timedelta(minutes=15)  # Cooldown period matching interval
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
@@ -327,8 +327,10 @@ def check_price_cross_trendlines(trendlines, df_15m):
         time_from_start = (last_timestamp - tl['x1']).total_seconds() / 3600
         tl_value = tl['y1'] + tl['slope'] * time_from_start
         
-        if prev_close <= tl_value and last_close > tl_value:
+        # For buy: only consider trendlines with slope >= 0 (support levels)
+        if tl['slope'] >= 0 and prev_close <= tl_value and last_close > tl_value:
             cross_over = True
+        # For sell: no slope filter, any trendline cross under is valid
         if prev_close >= tl_value and last_close < tl_value:
             cross_under = True
     
@@ -500,7 +502,7 @@ async def check_alerts(bot: Bot):
                                         new_lines = primary_high_trendlines + primary_low_trendlines
                                         updated_lines = current_stored['lines'] + new_lines
                                         if len(updated_lines) > MAX_STORED_TRENDLINES:
-                                            updated_lines = sorted(updated_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINE_LENGTH:]
+                                            updated_lines = sorted(updated_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
                                         stored_trendlines[symbol] = {
                                             'lines': updated_lines,
                                             'stored_time': current_time

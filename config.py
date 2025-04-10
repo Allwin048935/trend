@@ -8,7 +8,8 @@ TELEGRAM_BOT_TOKEN = "7619077339:AAGvLzsABJRFKsv50TgI1XxMNhVvtED-E_4"  # Token f
 #TELEGRAM_TOKEN = "8066951467:AAHOaFDL9kixcdwtjbwb-szDgnl8R9Vz8AI" 
 
  # Token for sell messages
-CHAT_ID = "1385370555"  # Your Telegram chat ID
+CHAT_ID = "1385370555"
+TELEGRAM_CHAT_ID = "1385370555"  # Your Telegram chat ID
 
 # Pionex API credentials
 PIONEX_API_KEY = "6P2BU19dXFdN8SjLgbSnvbECny5HbT8nGXKtQf5yDeYB6fq3yGeeZ1CzafRhMnm3L5"

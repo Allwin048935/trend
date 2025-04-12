@@ -685,7 +685,7 @@ async def main():
     application = Application.builder().token(config.TELEGRAM_TOKEN).build()
     application.add_handler(CallbackQueryHandler(handle_telegram_callback))
     asyncio.create_task(run_alert_loop(application))
-    await application.run_polling(allowed_updates=Update_ALL_TYPES)
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     nest_asyncio.apply()

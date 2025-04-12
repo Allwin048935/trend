@@ -333,8 +333,14 @@ def plot_candles(df, symbol, title):
         df_plot = df.set_index('timestamp')
         df_plot = df_plot[['Open', 'High', 'Low', 'Close', 'RSI']].copy()
         
-        mc = mpf.make_marketcolors(up='#2fc71e', down='#ed2f1a', inherit=True)
-        s = mpf.make_mpf_style(base_mpl_style=['bmh', 'dark_background'], marketcolors=mc, y_on_right=True)
+        # Define market colors for candlesticks
+        mc = mpf.make_marketcolors(
+            up='#2fc71e', down='#ed2f1a', edge='white', wick='white', volume='in', inherit=True
+        )
+        s = mpf.make_mpf_style(
+            base_mpl_style='default', marketcolors=mc, facecolor='black', edgecolor='white',
+            figcolor='black', gridcolor='gray', gridstyle='--'
+        )
         
         short_ema = calculate_ema(df, 3)
         long_ema = calculate_ema(df, 7)
@@ -344,10 +350,22 @@ def plot_candles(df, symbol, title):
         gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.1)
         ax_candle = fig.add_subplot(gs[0])
         ax_rsi = fig.add_subplot(gs[1], sharex=ax_candle)
-        ax_candle.set_facecolor('#1c2526')
-        ax_rsi.set_facecolor('#1c2526')
         
-        # Plot candlesticks
+        # Set pure black background for axes
+        ax_candle.set_facecolor('black')
+        ax_rsi.set_facecolor('black')
+        
+        # Configure axes colors
+        for ax in [ax_candle, ax_rsi]:
+            ax.spines['top'].set_color('white')
+            ax.spines['bottom'].set_color('white')
+            ax.spines['left'].set_color('white')
+            ax.spines['right'].set_color('white')
+            ax.tick_params(colors='white')
+            ax.yaxis.label.set_color('white')
+            ax.xaxis.label.set_color('white')
+        
+        # Plot candlesticks explicitly
         mpf.plot(
             df_plot,
             type='candle',
@@ -358,7 +376,8 @@ def plot_candles(df, symbol, title):
             addplot=[
                 mpf.make_addplot(short_ema, ax=ax_candle, color='cyan', width=1.5),
                 mpf.make_addplot(long_ema, ax=ax_candle, color='magenta', width=1.5),
-            ]
+            ],
+            warn_too_much_data=len(df_plot)+1  # Suppress data limit warning
         )
         
         # Plot RSI
@@ -370,22 +389,19 @@ def plot_candles(df, symbol, title):
         ax_rsi.axhline(30, color='green', linestyle='--', alpha=0.5)
         ax_rsi.set_ylim(0, 100)
         ax_rsi.set_ylabel('RSI')
-        ax_rsi.legend()
+        ax_rsi.legend(facecolor='black', labelcolor='white', edgecolor='white')
         
         def plot_trendline(ax, tl, timestamps, color, linestyle='-', linewidth=2.5):
-            # Extract start and end points within the data range
             x1 = tl['x1']
             x2 = tl['x2']
             y1 = tl['y1']
             y2 = tl['y2']
             
-            # Clip to the data's timestamp range to avoid extrapolation issues
             min_time = timestamps.min()
             max_time = timestamps.max()
             x1 = max(x1, min_time)
             x2 = min(x2, max_time)
             
-            # Recalculate y values if clipped
             time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
             slope = tl['slope'] if time_diff != 0 else 0
             if x1 != tl['x1']:
@@ -393,7 +409,6 @@ def plot_candles(df, symbol, title):
             if x2 != tl['x2']:
                 y2 = tl['y1'] + slope * ((x2 - tl['x1']).total_seconds() / 3600)
             
-            # Plot only if within bounds
             if x1 <= max_time and x2 >= min_time:
                 ax.plot([x1, x2], [y1, y2], color=color, linestyle=linestyle, linewidth=linewidth)
         
@@ -454,7 +469,7 @@ def plot_candles(df, symbol, title):
         fig.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.05, hspace=0.1)
         
         buf = BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', facecolor=fig.get_facecolor())
+        plt.savefig(buf, format='png', bbox_inches='tight', facecolor='black', edgecolor='none')
         buf.seek(0)
         plt.close(fig)
         return buf

@@ -341,7 +341,7 @@ def plot_candles(df, symbol, title):
         
         # Initialize subplot figure
         fig = plt.figure(figsize=(10, 8), facecolor='black')
-        gs = fig.add_gridspec(3, 1, height_ratios=[3, 1, 0.1], hspace=0.05)
+        gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.1)
         ax_candle = fig.add_subplot(gs[0])
         ax_rsi = fig.add_subplot(gs[1], sharex=ax_candle)
         ax_candle.set_facecolor('#1c2526')
@@ -435,7 +435,9 @@ def plot_candles(df, symbol, title):
         # Set title and adjust layout
         ax_candle.set_title(f"{symbol} - {title}", fontsize=14, color='white')
         plt.setp(ax_candle.get_xticklabels(), visible=False)
-        plt.tight_layout()
+        
+        # Manual layout adjustment
+        fig.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.05, hspace=0.1)
         
         buf = BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight', facecolor=fig.get_facecolor())

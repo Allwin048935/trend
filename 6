@@ -365,19 +365,59 @@ def plot_candles(df, symbol, title):
             ax.yaxis.label.set_color('white')
             ax.xaxis.label.set_color('white')
         
-        # Plot candlesticks explicitly
+        # Plot candlesticks using reference code approach
+        add_plots = [
+            mpf.make_addplot(short_ema, color='cyan', width=1.5, linestyle='-'),
+            mpf.make_addplot(long_ema, color='magenta', width=1.5, linestyle='-'),
+        ]
+        
+        def trendline_to_series(df, tl):
+            series = pd.Series(index=df['timestamp'], dtype=float)
+            start_idx = df['timestamp'].searchsorted(tl['x1'])
+            end_idx = df['timestamp'].searchsorted(tl['x2'])
+            if end_idx >= len(df):
+                end_idx = len(df) - 1
+            
+            if start_idx < len(df) and end_idx < len(df):
+                time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
+                if time_diff != 0:
+                    slope = (tl['y2'] - tl['y1']) / time_diff
+                    for i in range(start_idx, end_idx + 1):
+                        time_from_start = (df['timestamp'].iloc[i] - tl['x1']).total_seconds() / 3600
+                        series.iloc[i] = tl['y1'] + slope * time_from_start
+            return series
+        
+        # Plot stored price trendlines
+        if symbol in stored_trendlines and 'price' in stored_trendlines[symbol]:
+            for tl in stored_trendlines[symbol]['price']['lines']:
+                color = '#cf0a83' if tl['slope'] < 0 else '#027521'
+                trend_series = trendline_to_series(df, tl)
+                add_plots.append(mpf.make_addplot(trend_series, color=color, width=2.5))
+        
+        # Plot new potential price trendlines
+        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+        price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+        
+        primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+        primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+        secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+        secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+        
+        for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
+            color = 'red' if tl['slope'] < 0 else 'green'
+            trend_series = trendline_to_series(df, tl)
+            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1.5))
+        
+        # Plot candlesticks
         mpf.plot(
-            df_plot,
+            df_plot[['Open', 'High', 'Low', 'Close']],
             type='candle',
             ax=ax_candle,
             style=s,
             datetime_format='%H:%M',
             ylabel='Price ($)',
-            addplot=[
-                mpf.make_addplot(short_ema, ax=ax_candle, color='cyan', width=1.5),
-                mpf.make_addplot(long_ema, ax=ax_candle, color='magenta', width=1.5),
-            ],
-            warn_too_much_data=len(df_plot)+1  # Suppress data limit warning
+            addplot=add_plots,
+            warn_too_much_data=len(df_plot)+1
         )
         
         # Plot RSI
@@ -412,32 +452,13 @@ def plot_candles(df, symbol, title):
             if x1 <= max_time and x2 >= min_time:
                 ax.plot([x1, x2], [y1, y2], color=color, linestyle=linestyle, linewidth=linewidth)
         
-        # Plot stored price trendlines
-        if symbol in stored_trendlines and 'price' in stored_trendlines[symbol]:
-            for tl in stored_trendlines[symbol]['price']['lines']:
-                color = '#cf0a83' if tl['slope'] < 0 else '#027521'
-                plot_trendline(ax_candle, tl, df['timestamp'], color, linewidth=2.5)
-        
         # Plot stored RSI trendlines
         if symbol in stored_trendlines and 'rsi' in stored_trendlines[symbol]:
             for tl in stored_trendlines[symbol]['rsi']['lines']:
                 color = '#cf0a83' if tl['slope'] < 0 else '#027521'
                 plot_trendline(ax_rsi, tl, df['timestamp'], color, linewidth=2.5)
         
-        # Calculate and plot new potential trendlines for price
-        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-        price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-        
-        primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
-        primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
-        secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
-        secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
-        
-        for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
-            color = 'red' if tl['slope'] < 0 else 'green'
-            plot_trendline(ax_candle, tl, df['timestamp'], color, linestyle='--', linewidth=1.5)
-        
-        # Calculate and plot new potential trendlines for RSI
+        # Plot new potential RSI trendlines
         rsi_high_pivots, rsi_low_pivots = find_pivot_points(df['RSI'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
         rsi_sec_high_pivots, rsi_sec_low_pivots = find_pivot_points(df['RSI'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
         
@@ -664,7 +685,7 @@ async def main():
     application = Application.builder().token(config.TELEGRAM_TOKEN).build()
     application.add_handler(CallbackQueryHandler(handle_telegram_callback))
     asyncio.create_task(run_alert_loop(application))
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    await application.run_polling(allowed_updates=Update_ALL_TYPES)
 
 if __name__ == '__main__':
     nest_asyncio.apply()

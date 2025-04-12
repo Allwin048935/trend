@@ -365,10 +365,10 @@ def plot_candles(df, symbol, title):
             ax.yaxis.label.set_color('white')
             ax.xaxis.label.set_color('white')
         
-        # Plot candlesticks using reference code approach
+        # Plot candlesticks with EMAs and trendlines
         add_plots = [
-            mpf.make_addplot(short_ema, color='cyan', width=1.5, linestyle='-'),
-            mpf.make_addplot(long_ema, color='magenta', width=1.5, linestyle='-'),
+            mpf.make_addplot(short_ema, color='cyan', width=1.5, linestyle='-', ax=ax_candle),
+            mpf.make_addplot(long_ema, color='magenta', width=1.5, linestyle='-', ax=ax_candle),
         ]
         
         def trendline_to_series(df, tl):
@@ -392,7 +392,7 @@ def plot_candles(df, symbol, title):
             for tl in stored_trendlines[symbol]['price']['lines']:
                 color = '#cf0a83' if tl['slope'] < 0 else '#027521'
                 trend_series = trendline_to_series(df, tl)
-                add_plots.append(mpf.make_addplot(trend_series, color=color, width=2.5))
+                add_plots.append(mpf.make_addplot(trend_series, color=color, width=2.5, ax=ax_candle))
         
         # Plot new potential price trendlines
         price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
@@ -406,7 +406,7 @@ def plot_candles(df, symbol, title):
         for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
             trend_series = trendline_to_series(df, tl)
-            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1.5))
+            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1.5, ax=ax_candle))
         
         # Plot candlesticks
         mpf.plot(

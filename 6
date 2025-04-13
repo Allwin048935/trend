@@ -338,37 +338,34 @@ def plot_candles(df, symbol, title):
             up='#2fc71e', down='#ed2f1a', edge='white', wick='white', volume='in', inherit=True
         )
         s = mpf.make_mpf_style(
-            base_mpl_style='default', marketcolors=mc, facecolor='black', edgecolor='white',
-            figcolor='black', gridcolor='gray', gridstyle='--'
+            base_mpl_style=['dark_background'], marketcolors=mc, y_on_right=True,
+            facecolor='black', edgecolor='white', figcolor='black', gridcolor='gray', gridstyle='--'
         )
         
         short_ema = calculate_ema(df, 3)
         long_ema = calculate_ema(df, 7)
         
-        # Initialize subplot figure
-        fig = plt.figure(figsize=(10, 8), facecolor='black')
-        gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.1)
-        ax_candle = fig.add_subplot(gs[0])
-        ax_rsi = fig.add_subplot(gs[1], sharex=ax_candle)
+        # Calculate trendlines
+        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+        price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
         
-        # Set pure black background for axes
-        ax_candle.set_facecolor('black')
-        ax_rsi.set_facecolor('black')
+        primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+        primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+        secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+        secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
         
-        # Configure axes colors
-        for ax in [ax_candle, ax_rsi]:
-            ax.spines['top'].set_color('white')
-            ax.spines['bottom'].set_color('white')
-            ax.spines['left'].set_color('white')
-            ax.spines['right'].set_color('white')
-            ax.tick_params(colors='white')
-            ax.yaxis.label.set_color('white')
-            ax.xaxis.label.set_color('white')
+        rsi_high_pivots, rsi_low_pivots = find_pivot_points(df['RSI'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+        rsi_sec_high_pivots, rsi_sec_low_pivots = find_pivot_points(df['RSI'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
         
-        # Plot candlesticks with EMAs and trendlines
+        rsi_primary_high_trendlines = calculate_trendlines(df, rsi_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+        rsi_primary_low_trendlines = calculate_trendlines(df, rsi_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+        rsi_secondary_high_trendlines = calculate_trendlines(df, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+        rsi_secondary_low_trendlines = calculate_trendlines(df, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+        
+        # Prepare additional plots for candlestick panel
         add_plots = [
-            mpf.make_addplot(short_ema, color='cyan', width=1.5, linestyle='-', ax=ax_candle),
-            mpf.make_addplot(long_ema, color='magenta', width=1.5, linestyle='-', ax=ax_candle),
+            mpf.make_addplot(short_ema, color='cyan', width=1.5, linestyle='-', panel=0),
+            mpf.make_addplot(long_ema, color='magenta', width=1.5, linestyle='-', panel=0),
         ]
         
         def trendline_to_series(df, tl):
@@ -387,110 +384,63 @@ def plot_candles(df, symbol, title):
                         series.iloc[i] = tl['y1'] + slope * time_from_start
             return series
         
-        # Plot stored price trendlines
+        # Add stored price trendlines
         if symbol in stored_trendlines and 'price' in stored_trendlines[symbol]:
             for tl in stored_trendlines[symbol]['price']['lines']:
                 color = '#cf0a83' if tl['slope'] < 0 else '#027521'
                 trend_series = trendline_to_series(df, tl)
-                add_plots.append(mpf.make_addplot(trend_series, color=color, width=2.5, ax=ax_candle))
+                add_plots.append(mpf.make_addplot(trend_series, color=color, width=2.5, panel=0))
         
-        # Plot new potential price trendlines
-        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-        price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-        
-        primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
-        primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
-        secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
-        secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
-        
+        # Add new price trendlines
         for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
             trend_series = trendline_to_series(df, tl)
-            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1.5, ax=ax_candle))
+            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1.5, panel=0))
         
-        # Plot candlesticks
-        mpf.plot(
-            df_plot[['Open', 'High', 'Low', 'Close']],
-            type='candle',
-            ax=ax_candle,
-            style=s,
-            datetime_format='%H:%M',
-            ylabel='Price ($)',
-            addplot=add_plots,
-            warn_too_much_data=len(df_plot)+1
-        )
-        
-        # Plot RSI
+        # Prepare RSI plot
         rsi = df_plot['RSI']
-        ax_rsi.plot(df_plot.index, rsi, color='purple', label='RSI (14)')
-        ax_rsi.fill_between(df_plot.index, rsi, 70, where=(rsi >= 70), facecolor='red', alpha=0.3)
-        ax_rsi.fill_between(df_plot.index, rsi, 30, where=(rsi <= 30), facecolor='green', alpha=0.3)
-        ax_rsi.axhline(70, color='red', linestyle='--', alpha=0.5)
-        ax_rsi.axhline(30, color='green', linestyle='--', alpha=0.5)
-        ax_rsi.set_ylim(0, 100)
-        ax_rsi.set_ylabel('RSI')
-        ax_rsi.legend(facecolor='black', labelcolor='white', edgecolor='white')
+        rsi_plot = [
+            mpf.make_addplot(rsi, color='purple', panel=1, ylabel='RSI'),
+            mpf.make_addplot([70] * len(rsi), color='red', linestyle='--', alpha=0.5, panel=1),
+            mpf.make_addplot([30] * len(rsi), color='green', linestyle='--', alpha=0.5, panel=1),
+        ]
         
-        def plot_trendline(ax, tl, timestamps, color, linestyle='-', linewidth=2.5):
-            x1 = tl['x1']
-            x2 = tl['x2']
-            y1 = tl['y1']
-            y2 = tl['y2']
-            
-            min_time = timestamps.min()
-            max_time = timestamps.max()
-            x1 = max(x1, min_time)
-            x2 = min(x2, max_time)
-            
-            time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
-            slope = tl['slope'] if time_diff != 0 else 0
-            if x1 != tl['x1']:
-                y1 = tl['y1'] + slope * ((x1 - tl['x1']).total_seconds() / 3600)
-            if x2 != tl['x2']:
-                y2 = tl['y1'] + slope * ((x2 - tl['x1']).total_seconds() / 3600)
-            
-            if x1 <= max_time and x2 >= min_time:
-                ax.plot([x1, x2], [y1, y2], color=color, linestyle=linestyle, linewidth=linewidth)
-        
-        # Plot stored RSI trendlines
+        # Add stored RSI trendlines
         if symbol in stored_trendlines and 'rsi' in stored_trendlines[symbol]:
             for tl in stored_trendlines[symbol]['rsi']['lines']:
                 color = '#cf0a83' if tl['slope'] < 0 else '#027521'
-                plot_trendline(ax_rsi, tl, df['timestamp'], color, linewidth=2.5)
+                trend_series = trendline_to_series(df, tl)
+                rsi_plot.append(mpf.make_addplot(trend_series, color=color, width=2.5, panel=1))
         
-        # Plot new potential RSI trendlines
-        rsi_high_pivots, rsi_low_pivots = find_pivot_points(df['RSI'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-        rsi_sec_high_pivots, rsi_sec_low_pivots = find_pivot_points(df['RSI'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-        
-        rsi_primary_high_trendlines = calculate_trendlines(df, rsi_high_pivots, PRIMARY_TRENDLINE_LENGTH)
-        rsi_primary_low_trendlines = calculate_trendlines(df, rsi_low_pivots, PRIMARY_TRENDLINE_LENGTH)
-        rsi_secondary_high_trendlines = calculate_trendlines(df, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
-        rsi_secondary_low_trendlines = calculate_trendlines(df, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
-        
+        # Add new RSI trendlines
         for tl in rsi_primary_high_trendlines + rsi_primary_low_trendlines + rsi_secondary_high_trendlines + rsi_secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
-            plot_trendline(ax_rsi, tl, df['timestamp'], color, linestyle='--', linewidth=1.5)
+            trend_series = trendline_to_series(df, tl)
+            rsi_plot.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1.5, panel=1))
         
-        # Set axis limits to align plots
-        min_time = df['timestamp'].min()
-        max_time = df['timestamp'].max()
-        ax_candle.set_xlim(min_time, max_time)
-        ax_rsi.set_xlim(min_time, max_time)
+        # Combine plots
+        all_plots = add_plots + rsi_plot
         
-        # Adjust y-limits for candlestick plot
-        price_min = df_plot['Low'].min() * 0.95
-        price_max = df_plot['High'].max() * 1.05
-        ax_candle.set_ylim(price_min, price_max)
+        # Plot using mplfinance
+        fig, axlist = mpf.plot(
+            df_plot[['Open', 'High', 'Low', 'Close']],
+            type='candle',
+            style=s,
+            figratio=(10, 8),
+            datetime_format='%H:%M',
+            ylabel='Price ($)',
+            addplot=all_plots,
+            panel_ratios=(3, 1),
+            returnfig=True,
+            tight_layout=True
+        )
         
-        # Set title and hide x-ticks on candlestick plot
-        ax_candle.set_title(f"{symbol} - {title}", fontsize=14, color='white')
-        plt.setp(ax_candle.get_xticklabels(), visible=False)
+        # Customize title
+        axlist[0].set_title(f"{symbol} - {title}", fontsize=25, style='italic', fontfamily='sans-serif', color='white')
         
-        # Manual layout adjustment
-        fig.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.05, hspace=0.1)
-        
+        # Save to buffer
         buf = BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', facecolor='black', edgecolor='none')
+        plt.savefig(buf, format='png', bbox_inches='tight', facecolor='black')
         buf.seek(0)
         plt.close(fig)
         return buf

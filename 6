@@ -400,7 +400,7 @@ def plot_candles(df, symbol, title):
         # Prepare RSI plot
         rsi = df_plot['RSI']
         rsi_plot = [
-            mpf.make_addplot(rsi, color='purple', panel=1, ylabel='RSI'),
+            mpf.make_addplot(rsi, color='white', panel=1, ylabel='RSI'),
             mpf.make_addplot([70] * len(rsi), color='red', linestyle='--', alpha=0.5, panel=1),
             mpf.make_addplot([30] * len(rsi), color='green', linestyle='--', alpha=0.5, panel=1),
         ]
@@ -410,13 +410,13 @@ def plot_candles(df, symbol, title):
             for tl in stored_trendlines[symbol]['rsi']['lines']:
                 color = '#cf0a83' if tl['slope'] < 0 else '#027521'
                 trend_series = trendline_to_series(df, tl)
-                rsi_plot.append(mpf.make_addplot(trend_series, color=color, width=2.5, panel=1))
+                rsi_plot.append(mpf.make_addplot(trend_series, color=color, width=1.5, panel=1))
         
         # Add new RSI trendlines
         for tl in rsi_primary_high_trendlines + rsi_primary_low_trendlines + rsi_secondary_high_trendlines + rsi_secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
             trend_series = trendline_to_series(df, tl)
-            rsi_plot.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1.5, panel=1))
+            rsi_plot.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1, panel=1))
         
         # Combine plots
         all_plots = add_plots + rsi_plot

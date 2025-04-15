@@ -39,10 +39,10 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '8h'  # For trendline calculation
-CHECK_INTERVAL = '2h'  # For price cross check
-PRIMARY_TRENDLINE_LENGTH = 20
-SECONDARY_TRENDLINE_LENGTH = 15
+interval = '1d'  # For trendline calculation
+CHECK_INTERVAL = '1d'  # For price cross check
+PRIMARY_TRENDLINE_LENGTH = 30
+SECONDARY_TRENDLINE_LENGTH = 20
 INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
 MAX_STORED_TRENDLINES = 10  # Maximum total stored trendlines per type
 
@@ -540,7 +540,7 @@ async def check_alerts(bot: Bot):
             # Check cooldown
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 2 * 3600:  # 2-hour cooldown
+            if last_alert and (current_time - last_alert).total_seconds() < 4 * 3600:  # 2-hour cooldown
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
 

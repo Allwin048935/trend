@@ -307,8 +307,8 @@ def check_price_cross_trendlines(trendlines, df_15m):
     if len(df_15m) < 3 or not trendlines:
         return False, False
     
-    last_close = df_15m['Close'].iloc[-2]
-    prev_close = df_15m['Close'].iloc[-3]
+    last_close = df_15m['Low'].iloc[-2]
+    prev_close = df_15m['Low'].iloc[-3]
     last_timestamp = df_15m['timestamp'].iloc[-1]
     
     cross_over = False

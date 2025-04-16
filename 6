@@ -252,9 +252,6 @@ def get_historical_data(symbol, interval, limit=150):
         logger.error(f"Binance fetch error for {symbol}: {e}")
         return pd.DataFrame()
 
-def calculate_ema(df, period):
-    return ta.trend.EMAIndicator(df['Close'], window=period).ema_indicator()
-
 # Trendline Functions
 def find_pivot_points(series, length, left_length):
     pivots_high = pd.Series(index=series.index, dtype=float)
@@ -343,9 +340,6 @@ def plot_candles(df, symbol, title):
             facecolor='black', edgecolor='white', figcolor='black', gridcolor='gray', gridstyle='--'
         )
         
-        short_ema = calculate_ema(df, 3)
-        long_ema = calculate_ema(df, 7)
-        
         # Calculate trendlines
         price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
         price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
@@ -364,10 +358,7 @@ def plot_candles(df, symbol, title):
         rsi_secondary_low_trendlines = calculate_trendlines(df, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
         
         # Prepare additional plots for candlestick panel
-        add_plots = [
-            mpf.make_addplot(short_ema, color='cyan', width=1.5, linestyle='-', panel=0),
-            mpf.make_addplot(long_ema, color='magenta', width=1.5, linestyle='-', panel=0),
-        ]
+        add_plots = []
         
         def trendline_to_series(df, tl):
             series = pd.Series(index=df['timestamp'], dtype=float)

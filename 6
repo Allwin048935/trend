@@ -239,7 +239,7 @@ def get_current_price(symbol):
     return None, None
 
 # Binance Data Functions
-def get_historical_data(symbol, interval, limit=150):
+def get_historical_data(symbol, interval, limit=100):
     try:
         ohlcv = binance.fetch_ohlcv(symbol, interval, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -568,11 +568,11 @@ async def check_alerts(bot: Bot):
             # Check cooldown
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() <  900:  # 2-hour cooldown
+            if last_alert and (current_time - last_alert).total_seconds() < 900:  # 2-hour cooldown
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
 
-            historical_data_8h = get_historical_data(symbol, interval, limit=500)
+            historical_data_8h = get_historical_data(symbol, interval, limit=100)
             if historical_data_8h.empty:
                 logger.warning(f"No 8h historical data fetched for {symbol}")
                 continue

@@ -39,12 +39,12 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '15m'  # For trendline calculation
-CHECK_INTERVAL = '15m'  # For price cross check
-PRIMARY_TRENDLINE_LENGTH = 30
+interval = '12h'  # For trendline calculation
+CHECK_INTERVAL = '4h'  # For price cross check
+PRIMARY_TRENDLINE_LENGTH = 50
 SECONDARY_TRENDLINE_LENGTH = 30
-INITIAL_MAX_TRENDLINES = 2  # Initial limit per type
-MAX_STORED_TRENDLINES = 4   # Maximum total stored trendlines per type
+INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
+MAX_STORED_TRENDLINES = 6 # Maximum total stored trendlines per type
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
@@ -269,73 +269,36 @@ def find_pivot_points(series, length, left_length):
 def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITIAL_MAX_TRENDLINES):
     trendlines = []
     pivot_points = pivots.dropna()
-    if len(pivot_points) < 3:  # Require at least 3 pivot points
+    if len(pivot_points) < 2:
         return trendlines
     
     timestamps = df['timestamp']
     last_timestamp = timestamps.iloc[-1]
     
-    # Tolerance for considering a point "touched" by the trendline (e.g., 0.5% of price)
-    tolerance = 0.005  # Adjust as needed based on asset volatility
+    for i in range(1, len(pivot_points)):
+        idx1 = pivot_points.index[i-1]
+        idx2 = pivot_points.index[i]
+        
+        x1 = timestamps.loc[idx1]
+        x2 = timestamps.loc[idx2]
+        y1 = pivot_points.iloc[i-1]
+        y2 = pivot_points.iloc[i]
+        
+        time_diff = (x2 - x1).total_seconds() / 3600
+        slope = (y2 - y1) / time_diff if time_diff != 0 else 0
+        
+        x_end = last_timestamp + pd.Timedelta(days=extension_days)
+        extension_time = (x_end - x2).total_seconds() / 3600
+        y_end = y2 + slope * extension_time
+        
+        trendlines.append({
+            'x1': x1, 'y1': y1,
+            'x2': x_end, 'y2': y_end,
+            'slope': slope,
+            'timestamp': x2
+        })
     
-    # Iterate through combinations of pivot points
-    for i in range(len(pivot_points) - 2):
-        for j in range(i + 1, len(pivot_points) - 1):
-            for k in range(j + 1, len(pivot_points)):
-                idx1 = pivot_points.index[i]
-                idx2 = pivot_points.index[j]
-                idx3 = pivot_points.index[k]
-                
-                x1 = timestamps.loc[idx1]
-                x2 = timestamps.loc[idx2]
-                x3 = timestamps.loc[idx3]
-                y1 = pivot_points.iloc[i]
-                y2 = pivot_points.iloc[j]
-                y3 = pivot_points.iloc[k]
-                
-                # Calculate slope using the first two points for simplicity
-                time_diff = (x2 - x1).total_seconds() / 3600
-                if time_diff == 0:
-                    continue
-                slope = (y2 - y1) / time_diff
-                
-                # Check if the third point lies on or near the line
-                time_to_x3 = (x3 - x1).total_seconds() / 3600
-                predicted_y3 = y1 + slope * time_to_x3
-                if abs(predicted_y3 - y3) / y3 > tolerance:
-                    continue  # Third point is too far from the line
-                
-                # Verify if the line "touches" at least three points (including others)
-                touch_count = 3  # Start with the three points
-                for m in range(len(pivot_points)):
-                    if m in [i, j, k]:
-                        continue
-                    idx_m = pivot_points.index[m]
-                    x_m = timestamps.loc[idx_m]
-                    y_m = pivot_points.iloc[m]
-                    time_to_m = (x_m - x1).total_seconds() / 3600
-                    predicted_y_m = y1 + slope * time_to_m
-                    if abs(predicted_y_m - y_m) / y_m <= tolerance:
-                        touch_count += 1
-                
-                if touch_count < 3:
-                    continue  # Skip if fewer than 3 points are touched
-                
-                # Extend the trendline
-                x_end = last_timestamp + pd.Timedelta(days=extension_days)
-                extension_time = (x_end - x2).total_seconds() / 3600
-                y_end = y2 + slope * extension_time
-                
-                trendlines.append({
-                    'x1': x1, 'y1': y1,
-                    'x2': x_end, 'y2': y_end,
-                    'slope': slope,
-                    'timestamp': x3  # Use the latest pivot point timestamp
-                })
-    
-    # Sort by timestamp (most recent first) and limit to initial_max
-    trendlines = sorted(trendlines, key=lambda x: x['timestamp'], reverse=True)
-    return trendlines[:initial_max]
+    return trendlines[:initial_max] if len(trendlines) > initial_max else trendlines
 
 def check_price_cross_trendlines(trendlines, df_15m):
     if len(df_15m) < 3 or not trendlines:
@@ -568,11 +531,11 @@ async def check_alerts(bot: Bot):
             # Check cooldown
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 900:  # 2-hour cooldown
+            if last_alert and (current_time - last_alert).total_seconds() < 1 * 3600:  # 2-hour cooldown
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
 
-            historical_data_8h = get_historical_data(symbol, interval, limit=100)
+            historical_data_8h = get_historical_data(symbol, interval, limit=500)
             if historical_data_8h.empty:
                 logger.warning(f"No 8h historical data fetched for {symbol}")
                 continue

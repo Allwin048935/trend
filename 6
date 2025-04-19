@@ -39,9 +39,9 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '12h'  # For trendline calculation
+interval = '1h'  # For trendline calculation
 CHECK_INTERVAL = '1h'  # For price cross check
-PRIMARY_TRENDLINE_LENGTH = 50
+PRIMARY_TRENDLINE_LENGTH = 30
 SECONDARY_TRENDLINE_LENGTH = 30
 INITIAL_MAX_TRENDLINES = 2  # Initial limit per type
 MAX_STORED_TRENDLINES = 4  # Maximum total stored trendlines per type
@@ -572,7 +572,7 @@ async def check_alerts(bot: Bot):
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
 
-            historical_data_8h = get_historical_data(symbol, interval, limit=500)
+            historical_data_8h = get_historical_data(symbol, interval, limit=250)
             if historical_data_8h.empty:
                 logger.warning(f"No 8h historical data fetched for {symbol}")
                 continue

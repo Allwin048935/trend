@@ -9,7 +9,7 @@ TELEGRAM_BOT_TOKEN = "7619077339:AAGvLzsABJRFKsv50TgI1XxMNhVvtED-E_4"  # Token f
 
 # Telegram bot tokens
 TELEGRAM_TOKEN = "8094712893:AAFS9SDWMbbodo9JJDhumeGQ2FtVZL0g5AU"  # Token for buy messages
-#TELEGRAM_TOKEN = "7413769690:AAFNIFhwa6qb7LIu0ciApOtYJPfI3cXWcE0" 
+#TELEGRAM_TOKEN = "7765471306:AAEaoDqOQSNj2rCJ2hSlAyuhaWvaEUVZbss" 
 
 
  # Token for sell messages

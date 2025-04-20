@@ -381,13 +381,13 @@ def plot_candles(df, symbol, title):
             for tl in stored_trendlines[symbol]['price']['lines']:
                 color = '#cf0a83' if tl['slope'] < 0 else '#027521'
                 trend_series = trendline_to_series(df, tl)
-                add_plots.append(mpf.make_addplot(trend_series, color=color, width=2.5, panel=0))
+                add_plots.append(mpf.make_addplot(trend_series, color=color, width=0.5, panel=0))
         
         # Add new price trendlines
         for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
             trend_series = trendline_to_series(df, tl)
-            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1.5, panel=0))
+            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=0.5, panel=0))
         
         # Prepare RSI plot
         rsi = df_plot['RSI']
@@ -402,13 +402,13 @@ def plot_candles(df, symbol, title):
             for tl in stored_trendlines[symbol]['rsi']['lines']:
                 color = '#cf0a83' if tl['slope'] < 0 else '#027521'
                 trend_series = trendline_to_series(df, tl)
-                rsi_plot.append(mpf.make_addplot(trend_series, color=color, width=1.5, panel=1))
+                rsi_plot.append(mpf.make_addplot(trend_series, color=color, width=0.5, panel=1))
         
         # Add new RSI trendlines
         for tl in rsi_primary_high_trendlines + rsi_primary_low_trendlines + rsi_secondary_high_trendlines + rsi_secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
             trend_series = trendline_to_series(df, tl)
-            rsi_plot.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=1, panel=1))
+            rsi_plot.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=0.5, panel=1))
         
         # Combine plots
         all_plots = add_plots + rsi_plot
@@ -480,7 +480,7 @@ async def handle_telegram_callback(update: Update, context: ContextTypes.DEFAULT
             await query.edit_message_text(f"Failed to place BUY order for {symbol}")
             return
         
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
         
         available_balance = get_account_balance(symbol)
         

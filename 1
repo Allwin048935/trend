@@ -39,8 +39,8 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '12h'  # For trendline calculation
-CHECK_INTERVAL = '4h'  # For price cross check
+interval = '8h'  # For trendline calculation
+CHECK_INTERVAL = '15m'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 30
 SECONDARY_TRENDLINE_LENGTH = 30
 INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
@@ -304,8 +304,8 @@ def check_price_cross_trendlines(trendlines, df_15m):
     if len(df_15m) < 3 or not trendlines:
         return False, False
     
-    last_close = df_15m['Low'].iloc[-2]
-    prev_close = df_15m['Low'].iloc[-3]
+    last_close = df_15m['Close'].iloc[-2]
+    prev_close = df_15m['Close'].iloc[-3]
     last_timestamp = df_15m['timestamp'].iloc[-1]
     
     cross_over = False
@@ -463,7 +463,7 @@ async def check_alerts(bot: Bot):
             # Check cooldown
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 1 * 3600:  # 1-hour cooldown
+            if last_alert and (current_time - last_alert).total_seconds() < 900:  # 1-hour cooldown
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
 

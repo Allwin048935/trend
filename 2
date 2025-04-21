@@ -1,15 +1,11 @@
 import requests
 import ccxt
 import pandas as pd
-import matplotlib.pyplot as plt
-import mplfinance as mpf
-from io import BytesIO
 import asyncio
 import nest_asyncio
 from telegram import Bot, Update
 from telegram.ext import Application, ContextTypes
 import config  # Import the config module
-import ta  # Import ta library
 import logging
 from datetime import datetime, timedelta
 import time
@@ -39,12 +35,13 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '12h'  # For trendline calculation
-CHECK_INTERVAL = '4h'  # For price cross check
+interval = '8h'  # For trendline calculation
+CHECK_INTERVAL = '15m'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 30
 SECONDARY_TRENDLINE_LENGTH = 30
 INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
-MAX_STORED_TRENDLINES = 6  # Maximum total stored trendlines per type
+MAX_STORED_TRENDLINES = 6  # Maximum total stored trendlines
+COOLDOWN_SECONDS = 3600  # 1-hour cooldown for alerts
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
@@ -60,7 +57,7 @@ binance = ccxt.binance({
 })
 
 # Store trendlines, active orders, and last alert times
-stored_trendlines = {}  # Format: {symbol: {'price': {'lines': [...], 'stored_time': datetime}, 'rsi': {...}}}
+stored_trendlines = {}  # Format: {symbol: {'lines': [...], 'stored_time': datetime}}
 active_orders = {}
 last_alert_times = {}  # Track last alert time per symbol
 
@@ -245,11 +242,6 @@ def get_historical_data(symbol, interval, limit=150):
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
-        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
-        # Log data stats for debugging
-        logger.debug(f"Fetched data for {symbol} ({interval}): {len(df)} rows, "
-                     f"Price range: {df['Close'].max() - df['Close'].min():.6f}, "
-                     f"RSI range: {df['RSI'].max() - df['RSI'].min():.6f}")
         return df
     except ccxt.ExchangeError as e:
         logger.error(f"Binance fetch error for {symbol}: {e}")
@@ -304,11 +296,11 @@ def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITI
     return trendlines[:initial_max] if len(trendlines) > initial_max else trendlines
 
 def check_price_cross_trendlines(trendlines, df_15m):
-    if len(df_15m) < 3 or not trendlines:
+    if len(df_15m) < 2 or not trendlines:
         return False, False
     
-    last_close = df_15m['Low'].iloc[-2]
-    prev_close = df_15m['Low'].iloc[-3]
+    last_close = df_15m['Close'].iloc[-1]
+    prev_close = df_15m['Close'].iloc[-2]
     last_timestamp = df_15m['timestamp'].iloc[-1]
     
     cross_over = False
@@ -325,170 +317,9 @@ def check_price_cross_trendlines(trendlines, df_15m):
     
     return cross_over, cross_under
 
-def plot_candles(df, symbol, title):
-    if df.empty or len(df) < 5:
-        logger.warning(f"Not enough data to plot candles for {symbol}: {len(df)} rows")
-        return None
-    
-    # Check for NaN or invalid data
-    price_columns = ['Open', 'High', 'Low', 'Close']
-    if df[price_columns].isnull().any().any() or df['RSI'].isnull().any():
-        logger.warning(f"Invalid or NaN data detected for {symbol}. Skipping plot.")
-        return None
-    
-    # Check for insufficient price variation
-    price_range = df[price_columns].max().max() - df[price_columns].min().min()
-    if price_range < 1e-4:  # Increased threshold for robustness
-        logger.warning(f"Price range too small for {symbol}: {price_range:.6f}. Skipping plot.")
-        return None
-    
-    # Check for insufficient RSI variation
-    rsi_range = df['RSI'].max() - df['RSI'].min()
-    if rsi_range < 1e-4:
-        logger.warning(f"RSI range too small for {symbol}: {rsi_range:.6f}. Skipping plot.")
-        return None
-    
-    try:
-        df_plot = df.set_index('timestamp')
-        df_plot = df_plot[['Open', 'High', 'Low', 'Close', 'RSI']].copy()
-        
-        # Define market colors for candlesticks
-        mc = mpf.make_marketcolors(
-            up='#2fc71e', down='#ed2f1a', edge='white', wick='white', volume='in', inherit=True
-        )
-        s = mpf.make_mpf_style(
-            base_mpl_style=['dark_background'], marketcolors=mc, y_on_right=True,
-            facecolor='black', edgecolor='white', figcolor='black', gridcolor='gray', gridstyle='--'
-        )
-        
-        # Calculate trendlines
-        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-        price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-        
-        primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
-        primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
-        secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
-        secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
-        
-        rsi_high_pivots, rsi_low_pivots = find_pivot_points(df['RSI'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-        rsi_sec_high_pivots, rsi_sec_low_pivots = find_pivot_points(df['RSI'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-        
-        rsi_primary_high_trendlines = calculate_trendlines(df, rsi_high_pivots, PRIMARY_TRENDLINE_LENGTH)
-        rsi_primary_low_trendlines = calculate_trendlines(df, rsi_low_pivots, PRIMARY_TRENDLINE_LENGTH)
-        rsi_secondary_high_trendlines = calculate_trendlines(df, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
-        rsi_secondary_low_trendlines = calculate_trendlines(df, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
-        
-        # Prepare additional plots for candlestick panel
-        add_plots = []
-        
-        def trendline_to_series(df, tl):
-            series = pd.Series(index=df['timestamp'], dtype=float)
-            start_idx = df['timestamp'].searchsorted(tl['x1'])
-            end_idx = df['timestamp'].searchsorted(tl['x2'])
-            if end_idx >= len(df):
-                end_idx = len(df) - 1
-            
-            if start_idx < len(df) and end_idx < len(df):
-                time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
-                if time_diff != 0:
-                    slope = (tl['y2'] - tl['y1']) / time_diff
-                    for i in range(start_idx, end_idx + 1):
-                        time_from_start = (df['timestamp'].iloc[i] - tl['x1']).total_seconds() / 3600
-                        series.iloc[i] = tl['y1'] + slope * time_from_start
-            return series
-        
-        # Add stored price trendlines
-        if symbol in stored_trendlines and 'price' in stored_trendlines[symbol]:
-            for tl in stored_trendlines[symbol]['price']['lines']:
-                color = '#cf0a83' if tl['slope'] < 0 else '#027521'
-                trend_series = trendline_to_series(df, tl)
-                add_plots.append(mpf.make_addplot(trend_series, color=color, width=0.5, panel=0))
-        
-        # Add new price trendlines
-        for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
-            color = 'red' if tl['slope'] < 0 else 'green'
-            trend_series = trendline_to_series(df, tl)
-            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=0.5, panel=0))
-        
-        # Prepare RSI plot
-        rsi = df_plot['RSI']
-        rsi_plot = [
-            mpf.make_addplot(rsi, color='white', panel=1, ylabel='RSI'),
-            mpf.make_addplot([70] * len(rsi), color='red', linestyle='--', alpha=0.5, panel=1),
-            mpf.make_addplot([30] * len(rsi), color='green', linestyle='--', alpha=0.5, panel=1),
-        ]
-        
-        # Add stored RSI trendlines
-        if symbol in stored_trendlines and 'rsi' in stored_trendlines[symbol]:
-            for tl in stored_trendlines[symbol]['rsi']['lines']:
-                color = '#cf0a83' if tl['slope'] < 0 else '#027521'
-                trend_series = trendline_to_series(df, tl)
-                rsi_plot.append(mpf.make_addplot(trend_series, color=color, width=0.5, panel=1))
-        
-        # Add new RSI trendlines
-        for tl in rsi_primary_high_trendlines + rsi_primary_low_trendlines + rsi_secondary_high_trendlines + rsi_secondary_low_trendlines:
-            color = 'red' if tl['slope'] < 0 else 'green'
-            trend_series = trendline_to_series(df, tl)
-            rsi_plot.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=0.5, panel=1))
-        
-        # Combine plots
-        all_plots = add_plots + rsi_plot
-        
-        # Calculate y-limits for price panel with larger buffer
-        price_min = df_plot[price_columns].min().min()
-        price_max = df_plot[price_columns].max().max()
-        price_buffer = max((price_max - price_min) * 0.15, 1e-3)  # 15% buffer, min 1e-3
-        price_ylim = (price_min - price_buffer, price_max + price_buffer)
-        
-        # Calculate y-limits for RSI panel with larger buffer
-        rsi_min = rsi.min()
-        rsi_max = rsi.max()
-        rsi_buffer = max((rsi_max - rsi_min) * 0.15, 2.0)  # 15% buffer, min 2.0
-        rsi_ylim = (max(rsi_min - rsi_buffer, 0), min(rsi_max + rsi_buffer, 100))
-        
-        # Log y-limits for debugging
-        logger.debug(f"{symbol} - Price ylim: {price_ylim}, RSI ylim: {rsi_ylim}")
-        
-        # Plot using mplfinance with explicit y-limits
-        fig, axlist = mpf.plot(
-            df_plot[['Open', 'High', 'Low', 'Close']],
-            type='candle',
-            style=s,
-            figratio=(10, 8),
-            datetime_format='%H:%M',
-            ylabel='Price ($)',
-            addplot=all_plots,
-            panel_ratios=(3, 1),
-            returnfig=True,
-            tight_layout=True,
-            ylim=price_ylim,  # Set price panel y-limits
-            alines=None  # Avoid automatic line adjustments
-        )
-        
-        # Set RSI panel y-limits
-        axlist[1].set_ylim(rsi_ylim)
-        
-        # Customize title
-        axlist[0].set_title(f"{symbol} - {title}", fontsize=25, style='italic', fontfamily='sans-serif', color='white')
-        
-        # Save to buffer
-        buf = BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', facecolor='black')
-        buf.seek(0)
-        plt.close(fig)
-        return buf
-    except Exception as e:
-        logger.error(f"Error plotting chart for {symbol}: {e}")
-        return None
-
 # Telegram Functions
-async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer):
-    if image_buffer is None:
-        logger.warning(f"No image buffer for {symbol}, skipping message")
-        return
-    
+async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str):
     try:
-        await bot.send_photo(chat_id=chat_id, photo=image_buffer)
         await bot.send_message(chat_id=chat_id, text=message)
         logger.info(f"Sent alert for {symbol}: {message}")
     except Exception as e:
@@ -504,36 +335,18 @@ async def check_alerts(bot: Bot):
             # Check cooldown
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 1 * 3600:  # 1-hour cooldown
+            if last_alert and (current_time - last_alert).total_seconds() < COOLDOWN_SECONDS:
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
 
             historical_data_8h = get_historical_data(symbol, interval, limit=250)
             if historical_data_8h.empty:
-                logger.warning(f"No 12h historical data fetched for {symbol}")
-                continue
-
-            # Validate 12h data
-            if (historical_data_8h['Close'].max() - historical_data_8h['Close'].min() < 1e-4 or 
-                historical_data_8h['RSI'].max() - historical_data_8h['RSI'].min() < 1e-4 or
-                historical_data_8h[ ['Open', 'High', 'Low', 'Close', 'RSI']].isnull().any().any()):
-                logger.warning(f"Invalid 12h data for {symbol}: Price range="
-                              f"{historical_data_8h['Close'].max() - historical_data_8h['Close'].min():.6f}, "
-                              f"RSI range={historical_data_8h['RSI'].max() - historical_data_8h['RSI'].min():.6f}")
+                logger.warning(f"No 8h historical data fetched for {symbol}")
                 continue
 
             historical_data_15m = get_historical_data(symbol, CHECK_INTERVAL, limit=5)
             if historical_data_15m.empty or len(historical_data_15m) < 5:
-                logger.warning(f"No or insufficient 4h historical data fetched for {symbol}")
-                continue
-
-            # Validate 4h data
-            if (historical_data_15m['Close'].max() - historical_data_15m['Close'].min() < 1e-4 or 
-                historical_data_15m['RSI'].max() - historical_data_15m['RSI'].min() < 1e-4 or
-                historical_data_15m[ ['Open', 'High', 'Low', 'Close', 'RSI']].isnull().any().any()):
-                logger.warning(f"Invalid 4h data for {symbol}: Price range="
-                              f"{historical_data_15m['Close'].max() - historical_data_15m['Close'].min():.6f}, "
-                              f"RSI range={historical_data_15m['RSI'].max() - historical_data_15m['RSI'].min():.6f}")
+                logger.warning(f"No or insufficient 15m historical data fetched for {symbol}")
                 continue
 
             historical_data_8h.name = symbol
@@ -548,18 +361,9 @@ async def check_alerts(bot: Bot):
             secondary_high_trendlines = calculate_trendlines(historical_data_8h, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
             secondary_low_trendlines = calculate_trendlines(historical_data_8h, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
             
-            # Calculate new potential RSI trendlines
-            rsi_high_pivots, rsi_low_pivots = find_pivot_points(historical_data_8h['RSI'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-            rsi_sec_high_pivots, rsi_sec_low_pivots = find_pivot_points(historical_data_8h['RSI'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-            
-            rsi_primary_high_trendlines = calculate_trendlines(historical_data_8h, rsi_high_pivots, PRIMARY_TRENDLINE_LENGTH)
-            rsi_primary_low_trendlines = calculate_trendlines(historical_data_8h, rsi_low_pivots, PRIMARY_TRENDLINE_LENGTH)
-            rsi_secondary_high_trendlines = calculate_trendlines(historical_data_8h, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
-            rsi_secondary_low_trendlines = calculate_trendlines(historical_data_8h, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
-            
             # Combine stored and new price trendlines for checking
-            current_stored = stored_trendlines.get(symbol, {'price': {'lines': [], 'stored_time': None}, 'rsi': {'lines': [], 'stored_time': None}})
-            all_price_trendlines = (current_stored['price']['lines'] + 
+            current_stored = stored_trendlines.get(symbol, {'lines': [], 'stored_time': None})
+            all_price_trendlines = (current_stored['lines'] + 
                                    primary_high_trendlines + primary_low_trendlines + 
                                    secondary_high_trendlines + secondary_low_trendlines)
 
@@ -592,7 +396,7 @@ async def check_alerts(bot: Bot):
                 sell_price = float(f"{sell_price:.{quote_precision}f}")
 
                 if available_balance < sell_quantity:
-                    logger.error(f"Insufficient balance for SELL: {available_balance} < {sell_quantity} for {symbol}")
+                    logger.error(f"Insufficient balance for SELL: {available_balance} < {sell_quantity}")
                     continue
 
                 sell_order_id = place_limit_order(symbol, "SELL", sell_quantity, sell_price)
@@ -608,30 +412,20 @@ async def check_alerts(bot: Bot):
                 }
 
                 # Send BUY alert
-                message = f"BUY order placed for {symbol} at {best_bid:.2f}\nSELL order placed at {sell_price:.2f}"
-                title = f'Price Cross Over Trendline {symbol}'
-                image_buffer = plot_candles(historical_data_8h, symbol, title)
-                if image_buffer:
-                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer)
-                    last_alert_times[symbol] = current_time
-                    # Store new price trendlines
-                    new_price_lines = primary_high_trendlines + primary_low_trendlines
-                    updated_price_lines = current_stored['price']['lines'] + new_price_lines
-                    if len(updated_price_lines) > MAX_STORED_TRENDLINES:
-                        updated_price_lines = sorted(updated_price_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
-                    
-                    # Store new RSI trendlines
-                    new_rsi_lines = rsi_primary_high_trendlines + rsi_primary_low_trendlines
-                    updated_rsi_lines = current_stored['rsi']['lines'] + new_rsi_lines
-                    if len(updated_rsi_lines) > MAX_STORED_TRENDLINES:
-                        updated_rsi_lines = sorted(updated_rsi_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
-                    
-                    stored_trendlines[symbol] = {
-                        'price': {'lines': updated_price_lines, 'stored_time': current_time},
-                        'rsi': {'lines': updated_rsi_lines, 'stored_time': current_time}
-                    }
-                else:
-                    logger.warning(f"Failed to generate chart for {symbol}")
+                message = f"{symbol}: BUY at {best_bid:.2f}, SELL order placed at {sell_price:.2f}"
+                await send_telegram_message(bot, config.CHAT_ID, symbol, message)
+                last_alert_times[symbol] = current_time
+
+                # Store new price trendlines
+                new_price_lines = primary_high_trendlines + primary_low_trendlines
+                updated_price_lines = current_stored['lines'] + new_price_lines
+                if len(updated_price_lines) > MAX_STORED_TRENDLINES:
+                    updated_price_lines = sorted(updated_price_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
+                
+                stored_trendlines[symbol] = {
+                    'lines': updated_price_lines,
+                    'stored_time': current_time
+                }
 
             if cross_under and symbol in active_orders:
                 # Execute SELL order
@@ -642,14 +436,10 @@ async def check_alerts(bot: Bot):
                         if sell_order_id:
                             del active_orders[symbol]
                             # Send SELL alert
-                            message = f"Position closed with SELL for {symbol} due to price cross under trendline"
-                            title = f'Price Cross Under Trendline {symbol}'
-                            image_buffer = plot_candles(historical_data_8h, symbol, title)
-                            if image_buffer:
-                                await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer)
-                                last_alert_times[symbol] = current_time
-                            else:
-                                logger.warning(f"Failed to generate chart for {symbol}")
+                            best_bid, best_ask = get_current_price(symbol)
+                            message = f"{symbol}: SELL at {best_bid:.2f} due to price cross under trendline"
+                            await send_telegram_message(bot, config.CHAT_ID, symbol, message)
+                            last_alert_times[symbol] = current_time
                         else:
                             logger.error(f"Failed to place market SELL for {symbol}")
                     else:

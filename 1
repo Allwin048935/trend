@@ -63,7 +63,6 @@ binance = ccxt.binance({
 stored_trendlines = {}  # Format: {symbol: {'price': {'lines': [...], 'stored_time': datetime}, 'rsi': {...}}}
 active_orders = {}
 last_alert_times = {}  # Track last alert time per symbol
-buy_quantities = {}  # Store buy quantities for sell orders
 
 # Pionex API Functions
 def generate_signature(method, path, params, body=None):
@@ -164,12 +163,12 @@ def place_market_order(symbol, side, amount_usdt=13.0, quantity=None):
     symbol_info = get_symbol_info(symbol)
     if not symbol_info:
         logger.error(f"Cannot place {side} order for {symbol}: No symbol info")
-        return None, None
+        return None
     pionex_symbol = symbol.replace("USDT", "_USDT")
     best_bid, best_ask = get_current_price(symbol)
     if not best_bid or not best_ask:
         logger.error(f"Cannot place {side} order for {symbol}: No price data")
-        return None, None
+        return None
     quote_precision = int(symbol_info['quotePrecision'])
     base_precision = int(symbol_info['basePrecision'])
     min_amount = float(symbol_info['minAmount'])
@@ -181,28 +180,16 @@ def place_market_order(symbol, side, amount_usdt=13.0, quantity=None):
     }
     if side.upper() == "BUY":
         body["amount"] = f"{amount_usdt:.{quote_precision}f}"
-        # Approximate quantity purchased (amount_usdt / price)
-        buy_quantity = amount_usdt / best_ask
-        buy_quantity = f"{buy_quantity:.{base_precision}f}"
     else:  # SELL
         body["size"] = f"{quantity:.{base_precision}f}"
-        buy_quantity = None
 
     response = api_request("POST", endpoint, params, body)
     if response and 'data' in response and response['result']:
         order_id = response['data']['orderId']
-        logger.info(f"Market {side} order placed for {pionex_symbol}: Order ID {order_id}, Quantity {buy_quantity if side.upper() == 'BUY' else quantity}")
-        # Store buy quantity for future sell orders
-        if side.upper() == "BUY":
-            buy_quantities[symbol] = float(buy_quantity)
-            logger.info(f"Stored buy quantity for {symbol}: {buy_quantity}")
-        elif side.upper() == "SELL":
-            # Clear buy quantity after selling
-            buy_quantities.pop(symbol, None)
-            logger.info(f"Cleared buy quantity for {symbol}")
-        return order_id, buy_quantity if side.upper() == "BUY" else None
+        logger.info(f"Market {side} order placed for {pionex_symbol}: Order ID {order_id}, Quantity {quantity if side.upper() == 'SELL' else amount_usdt}")
+        return order_id
     logger.error(f"Market {side} order failed for {pionex_symbol}: {response}")
-    return None, None
+    return None
 
 def place_limit_order(symbol, side, quantity, price):
     endpoint = "/api/v1/trade/order"
@@ -266,7 +253,6 @@ def get_historical_data(symbol, interval, limit=150):
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
-        # Calculate RSI
         df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
         return df
     except ccxt.ExchangeError as e:
@@ -324,7 +310,6 @@ def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITI
 def check_price_cross_trendlines(trendlines, df_15m):
     if len(df_15m) < 3 or not trendlines:
         return False, False
-
     curr_low = df_15m['Low'].iloc[-1] 
     last_low = df_15m['Low'].iloc[-2]
     prev_low = df_15m['Low'].iloc[-3]
@@ -334,7 +319,6 @@ def check_price_cross_trendlines(trendlines, df_15m):
     curr_high = df_15m['High'].iloc[-1]
     last_high = df_15m['High'].iloc[-2]
     prev_high = df_15m['High'].iloc[-3]
-
     last_timestamp = df_15m['timestamp'].iloc[-1]
     
     cross_over = False
@@ -360,7 +344,6 @@ def plot_candles(df, symbol, title):
         df_plot = df.set_index('timestamp')
         df_plot = df_plot[['Open', 'High', 'Low', 'Close', 'RSI']].copy()
         
-        # Define market colors for candlesticks
         mc = mpf.make_marketcolors(
             up='#2fc71e', down='#ed2f1a', edge='white', wick='white', volume='in', inherit=True
         )
@@ -369,7 +352,6 @@ def plot_candles(df, symbol, title):
             facecolor='black', edgecolor='white', figcolor='black', gridcolor='gray', gridstyle='--'
         )
         
-        # Calculate trendlines
         price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
         price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
         
@@ -386,7 +368,6 @@ def plot_candles(df, symbol, title):
         rsi_secondary_high_trendlines = calculate_trendlines(df, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
         rsi_secondary_low_trendlines = calculate_trendlines(df, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
         
-        # Prepare additional plots for candlestick panel
         add_plots = []
         
         def trendline_to_series(df, tl):
@@ -405,20 +386,17 @@ def plot_candles(df, symbol, title):
                         series.iloc[i] = tl['y1'] + slope * time_from_start
             return series
         
-        # Add stored price trendlines
         if symbol in stored_trendlines and 'price' in stored_trendlines[symbol]:
             for tl in stored_trendlines[symbol]['price']['lines']:
                 color = '#cf0a83' if tl['slope'] < 0 else '#027521'
                 trend_series = trendline_to_series(df, tl)
                 add_plots.append(mpf.make_addplot(trend_series, color=color, width=0.5, panel=0))
         
-        # Add new price trendlines
         for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
             trend_series = trendline_to_series(df, tl)
             add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=0.5, panel=0))
         
-        # Prepare RSI plot
         rsi = df_plot['RSI']
         rsi_plot = [
             mpf.make_addplot(rsi, color='white', panel=1, ylabel='RSI'),
@@ -426,23 +404,19 @@ def plot_candles(df, symbol, title):
             mpf.make_addplot([30] * len(rsi), color='green', linestyle='--', alpha=0.5, panel=1),
         ]
         
-        # Add stored RSI trendlines
         if symbol in stored_trendlines and 'rsi' in stored_trendlines[symbol]:
             for tl in stored_trendlines[symbol]['rsi']['lines']:
                 color = '#cf0a83' if tl['slope'] < 0 else '#027521'
                 trend_series = trendline_to_series(df, tl)
                 rsi_plot.append(mpf.make_addplot(trend_series, color=color, width=0.5, panel=1))
         
-        # Add new RSI trendlines
         for tl in rsi_primary_high_trendlines + rsi_primary_low_trendlines + rsi_secondary_high_trendlines + rsi_secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
             trend_series = trendline_to_series(df, tl)
             rsi_plot.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=0.5, panel=1))
         
-        # Combine plots
         all_plots = add_plots + rsi_plot
         
-        # Plot using mplfinance
         fig, axlist = mpf.plot(
             df_plot[['Open', 'High', 'Low', 'Close']],
             type='candle',
@@ -456,10 +430,8 @@ def plot_candles(df, symbol, title):
             tight_layout=True
         )
         
-        # Customize title
         axlist[0].set_title(f"{symbol} - {title}", fontsize=25, style='italic', fontfamily='sans-serif', color='white')
         
-        # Save to buffer
         buf = BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight', facecolor='black')
         buf.seek(0)
@@ -469,12 +441,10 @@ def plot_candles(df, symbol, title):
         logger.error(f"Error plotting chart for {symbol}: {e}")
         return None
 
-# Telegram Functions
 async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer):
     if image_buffer is None:
         logger.warning(f"No image buffer for {symbol}, skipping message")
         return
-    
     try:
         await bot.send_photo(chat_id=chat_id, photo=image_buffer)
         await bot.send_message(chat_id=chat_id, text=message)
@@ -486,73 +456,46 @@ async def check_alerts(bot: Bot):
     if not SELECTED_SYMBOLS:
         logger.error("No symbols selected to check - bot cannot proceed without symbols")
         return
-    
     for symbol in SELECTED_SYMBOLS:
         try:
-            # Check cooldown
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 300:  # 1-hour cooldown
+            if last_alert and (current_time - last_alert).total_seconds() < 300:
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
-
             historical_data_8h = get_historical_data(symbol, interval, limit=250)
             if historical_data_8h.empty:
                 logger.warning(f"No 8h historical data fetched for {symbol}")
                 continue
-
             historical_data_15m = get_historical_data(symbol, CHECK_INTERVAL, limit=5)
             if historical_data_15m.empty or len(historical_data_15m) < 5:
                 logger.warning(f"No or insufficient 15m historical data fetched for {symbol}")
                 continue
-
             historical_data_8h.name = symbol
             historical_data_15m.name = symbol
-
-            # Calculate new potential price trendlines
             price_high_pivots, price_low_pivots = find_pivot_points(historical_data_8h['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
             price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(historical_data_8h['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-            
             primary_high_trendlines = calculate_trendlines(historical_data_8h, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
             primary_low_trendlines = calculate_trendlines(historical_data_8h, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
             secondary_high_trendlines = calculate_trendlines(historical_data_8h, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
             secondary_low_trendlines = calculate_trendlines(historical_data_8h, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
-            
-            # Calculate new potential RSI trendlines
             rsi_high_pivots, rsi_low_pivots = find_pivot_points(historical_data_8h['RSI'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
             rsi_sec_high_pivots, rsi_sec_low_pivots = find_pivot_points(historical_data_8h['RSI'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-            
             rsi_primary_high_trendlines = calculate_trendlines(historical_data_8h, rsi_high_pivots, PRIMARY_TRENDLINE_LENGTH)
             rsi_primary_low_trendlines = calculate_trendlines(historical_data_8h, rsi_low_pivots, PRIMARY_TRENDLINE_LENGTH)
             rsi_secondary_high_trendlines = calculate_trendlines(historical_data_8h, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
             rsi_secondary_low_trendlines = calculate_trendlines(historical_data_8h, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
-            
-            # Combine stored and new price trendlines for checking
             current_stored = stored_trendlines.get(symbol, {'price': {'lines': [], 'stored_time': None}, 'rsi': {'lines': [], 'stored_time': None}})
             all_price_trendlines = (current_stored['price']['lines'] + 
                                    primary_high_trendlines + primary_low_trendlines + 
                                    secondary_high_trendlines + secondary_low_trendlines)
-
             cross_over, cross_under = check_price_cross_trendlines(all_price_trendlines, historical_data_15m)
-
             if cross_over and symbol not in active_orders:
-                # Execute BUY order
-                buy_order_id, buy_quantity = place_market_order(symbol, "BUY")
+                buy_order_id = place_market_order(symbol, "BUY")
                 if not buy_order_id:
                     logger.error(f"Failed to place BUY order for {symbol}")
                     continue
-
-                # Verify stored buy quantity
-                if symbol not in buy_quantities:
-                    logger.error(f"No buy quantity stored for {symbol} after BUY order")
-                    continue
-                buy_quantity = buy_quantities[symbol]
-                logger.info(f"Using stored buy quantity for {symbol}: {buy_quantity}")
-
-                # Wait briefly to ensure balance updates
                 await asyncio.sleep(5)
-
-                # Verify balance and place SELL order with retries
                 best_bid, best_ask = get_current_price(symbol)
                 if not best_bid or not best_ask:
                     logger.error(f"Failed to get price for {symbol}")
@@ -564,17 +507,19 @@ async def check_alerts(bot: Bot):
                     continue
                 precision = int(symbol_info['basePrecision'])
                 quote_precision = int(symbol_info['quotePrecision'])
-                min_quantity = float(symbol_info.get('minSize', 0.0001))  # Fallback to 0.0001 if minSize is missing
-                sell_quantity = buy_quantity  # Start with full buy quantity
+                min_quantity = float(symbol_info.get('minSize', 0.0001))
+                available_balance = get_account_balance(symbol)
+                logger.info(f"Available balance for {symbol}: {available_balance}")
+                if available_balance <= 0:
+                    logger.error(f"No available balance for SELL on {symbol}")
+                    continue
+                sell_quantity = available_balance
                 sell_price = float(f"{sell_price:.{quote_precision}f}")
-
-                # Retry placing limit sell order with decreasing quantity
                 sell_order_id = None
                 attempt = 0
                 max_attempts = 5
-                reduction_factors = [1.0, 0.999, 0.998, 0.997, 0.996]  # Start with 1.0 (no reduction)
+                reduction_factors = [1.0, 0.998, 0.996, 0.994, 0.992]
                 while attempt < max_attempts and sell_order_id is None:
-                    available_balance = get_account_balance(symbol)
                     logger.info(f"Attempt {attempt + 1}/{max_attempts}: Sell quantity {sell_quantity}, Available balance {available_balance}, Min quantity {min_quantity}")
                     if available_balance < sell_quantity:
                         logger.error(f"Insufficient balance for SELL on {symbol}: {available_balance} < {sell_quantity}")
@@ -586,25 +531,21 @@ async def check_alerts(bot: Bot):
                     if sell_order_id:
                         logger.info(f"Limit SELL order placed for {symbol}: Order ID {sell_order_id}, Quantity {placed_quantity}")
                         break
-                    logger.warning(f"Attempt {attempt + 1} failed to place SELL order for {symbol}, reducing quantity")
+                    logger.warning(f"Attempt {attempt + 1} failed to place SELL order for {symbol}, reducing quantity by 0.2%")
                     reduction_factor = reduction_factors[attempt + 1] if attempt + 1 < len(reduction_factors) else reduction_factors[-1]
-                    sell_quantity = buy_quantity * reduction_factor
+                    sell_quantity = available_balance * reduction_factor
                     sell_quantity = float(f"{sell_quantity:.{precision}f}")
                     attempt += 1
                     await asyncio.sleep(2)
-
                 if not sell_order_id:
                     logger.error(f"Failed to place SELL order for {symbol} after {max_attempts} attempts")
                     continue
-
                 active_orders[symbol] = {
                     'order_id': sell_order_id,
                     'sell_price': sell_price,
                     'side': 'BUY',
                     'quantity': placed_quantity
                 }
-
-                # Send BUY alert with order IDs
                 message = (f"BUY order placed for {symbol} at {best_bid:.5f}, Order ID: {buy_order_id}\n"
                           f"SELL order placed at {sell_price:.5f}, Order ID: {sell_order_id}")
                 title = f'Price Cross Over Trendline {symbol}'
@@ -612,34 +553,27 @@ async def check_alerts(bot: Bot):
                 if image_buffer:
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer)
                     last_alert_times[symbol] = current_time
-                    # Store new price trendlines
                     new_price_lines = primary_high_trendlines + primary_low_trendlines
                     updated_price_lines = current_stored['price']['lines'] + new_price_lines
                     if len(updated_price_lines) > MAX_STORED_TRENDLINES:
                         updated_price_lines = sorted(updated_price_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
-                    
-                    # Store new RSI trendlines
                     new_rsi_lines = rsi_primary_high_trendlines + rsi_primary_low_trendlines
                     updated_rsi_lines = current_stored['rsi']['lines'] + new_rsi_lines
                     if len(updated_rsi_lines) > MAX_STORED_TRENDLINES:
                         updated_rsi_lines = sorted(updated_rsi_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
-                    
                     stored_trendlines[symbol] = {
                         'price': {'lines': updated_price_lines, 'stored_time': current_time},
                         'rsi': {'lines': updated_rsi_lines, 'stored_time': current_time}
                     }
                 else:
                     logger.warning(f"Failed to generate chart for {symbol}")
-
             if cross_under and symbol in active_orders:
-                # Execute SELL order
                 order_info = active_orders[symbol]
                 if order_info['side'] == 'BUY':
                     if cancel_order(symbol, order_info['order_id']):
-                        sell_order_id, _ = place_market_order(symbol, "SELL", quantity=order_info['quantity'])
+                        sell_order_id = place_market_order(symbol, "SELL", quantity=order_info['quantity'])
                         if sell_order_id:
                             del active_orders[symbol]
-                            # Send SELL alert with order ID
                             message = (f"Position closed with SELL for {symbol} due to price cross under trendline\n"
                                       f"SELL Order ID: {sell_order_id}")
                             title = f'Price Cross Under Trendline {symbol}'

@@ -39,8 +39,8 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '5m'  # For trendline calculation
-CHECK_INTERVAL = '5m'  # For price cross check
+interval = '15m'  # For trendline calculation
+CHECK_INTERVAL = '15m'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 30
 SECONDARY_TRENDLINE_LENGTH = 30
 INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
@@ -544,7 +544,7 @@ async def check_alerts(bot: Bot):
                 if not best_bid or not best_ask:
                     logger.error(f"Failed to get price for {symbol}")
                     continue
-                sell_price = best_ask * 1.015
+                sell_price = best_ask * 1.05
                 symbol_info = get_symbol_info(symbol)
                 if not symbol_info:
                     logger.error(f"Failed to get symbol info for {symbol}")
@@ -552,7 +552,7 @@ async def check_alerts(bot: Bot):
                 precision = int(symbol_info['basePrecision'])
                 quote_precision = int(symbol_info['quotePrecision'])
                 min_quantity = float(symbol_info.get('minSize', 0.0001))  # Fallback to 0.0001 if minSize is missing
-                sell_quantity = buy_quantity * 0.995
+                sell_quantity = buy_quantity * 1
                 sell_price = float(f"{sell_price:.{quote_precision}f}")
 
                 # Retry placing limit sell order with decreasing quantity

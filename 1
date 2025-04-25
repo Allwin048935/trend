@@ -544,7 +544,7 @@ async def check_alerts(bot: Bot):
                 if not best_bid or not best_ask:
                     logger.error(f"Failed to get price for {symbol}")
                     continue
-                sell_price = best_ask * 1.05
+                sell_price = best_ask * 1.015
                 symbol_info = get_symbol_info(symbol)
                 if not symbol_info:
                     logger.error(f"Failed to get symbol info for {symbol}")
@@ -577,7 +577,7 @@ async def check_alerts(bot: Bot):
                     sell_quantity = buy_quantity * reduction_factor
                     sell_quantity = float(f"{sell_quantity:.{precision}f}")
                     attempt += 1
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(5)
 
                 if not sell_order_id:
                     logger.error(f"Failed to place SELL order for {symbol} after {max_attempts} attempts")

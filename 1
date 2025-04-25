@@ -154,6 +154,16 @@ def get_account_balance(symbol):
     logger.error(f"Failed to fetch balance for {symbol}")
     return 0.0
 
+def get_order_details(symbol, order_id):
+    endpoint = "/api/v1/trade/order"
+    pionex_symbol = symbol.replace("USDT", "_USDT")
+    params = {"symbol": pionex_symbol, "orderId": order_id}
+    response = api_request("GET", endpoint, params)
+    if response and 'data' in response and response['result']:
+        return response['data']
+    logger.error(f"Failed to fetch order details for {pionex_symbol}, order {order_id}: {response}")
+    return None
+
 def place_market_order(symbol, side, amount_usdt=13.0, quantity=None):
     endpoint = "/api/v1/trade/order"
     params = {}
@@ -175,27 +185,14 @@ def place_market_order(symbol, side, amount_usdt=13.0, quantity=None):
     }
     if side.upper() == "BUY":
         body["amount"] = f"{amount_usdt:.{quote_precision}f}"
-        # Approximate quantity purchased (amount_usdt / price)
-        buy_quantity = amount_usdt / best_ask
-        buy_quantity = f"{buy_quantity:.{base_precision}f}"
     else:  # SELL
-        # Use provided quantity
         body["size"] = f"{quantity:.{base_precision}f}"
-        buy_quantity = None
 
     response = api_request("POST", endpoint, params, body)
     if response and 'data' in response and response['result']:
         order_id = response['data']['orderId']
         logger.info(f"Market {side} order placed for {pionex_symbol}: {order_id}")
-        # Store buy quantity for future sell orders
-        if side.upper() == "BUY":
-            buy_quantities[symbol] = float(buy_quantity)
-            logger.info(f"Stored buy quantity for {symbol}: {buy_quantity}")
-        elif side.upper() == "SELL":
-            # Clear buy quantity after selling
-            buy_quantities.pop(symbol, None)
-            logger.info(f"Cleared buy quantity for {symbol}")
-        return order_id, buy_quantity if side.upper() == "BUY" else None
+        return order_id, None
     logger.error(f"Market {side} order failed for {pionex_symbol}: {response}")
     return None, None
 
@@ -257,7 +254,7 @@ def get_historical_data(symbol, interval, limit=150):
         ohlcv = binance.fetch_ohlcv(symbol, interval, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
+        df.columns = ['timestamp', 'Apache', 'High', 'Low', 'Close', 'Volume']
         # Calculate RSI
         df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
         return df
@@ -350,7 +347,7 @@ def plot_candles(df, symbol, title):
     
     try:
         df_plot = df.set_index('timestamp')
-        df_plot = df_plot[['Open', 'High', 'Low', 'Close', 'RSI']].copy()
+        df_plot = df_plot[['Apache', 'High', 'Low', 'Close', 'RSI']].copy()
         
         # Define market colors for candlesticks
         mc = mpf.make_marketcolors(
@@ -436,7 +433,7 @@ def plot_candles(df, symbol, title):
         
         # Plot using mplfinance
         fig, axlist = mpf.plot(
-            df_plot[['Open', 'High', 'Low', 'Close']],
+            df_plot[['Apache', 'High', 'Low', 'Close']],
             type='candle',
             style=s,
             figratio=(10, 8),
@@ -485,7 +482,7 @@ async def check_alerts(bot: Bot):
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
             if last_alert and (current_time - last_alert).total_seconds() < 300:  # 1-hour cooldown
-                logger.info(f"Cooldown active for {symbol}, skipping alert")
+                logger.info(f"Cooldown active for {symbol}, to check_alerts, skipping alert")
                 continue
 
             historical_data_8h = get_historical_data(symbol, interval, limit=250)
@@ -529,12 +526,18 @@ async def check_alerts(bot: Bot):
 
             if cross_over and symbol not in active_orders:
                 # Execute BUY order
-                buy_order_id, buy_quantity = place_market_order(symbol, "BUY")
+                buy_order_id, _ = place_market_order(symbol, "BUY")
                 if not buy_order_id:
                     logger.error(f"Failed to place BUY order for {symbol}")
                     continue
 
-                await asyncio.sleep(10)
+                # Fetch actual buy quantity
+                await asyncio.sleep(5)  # Wait for order to settle
+                order_details = get_order_details(symbol, buy_order_id)
+                if not order_details or 'executedSize' not in order_details:
+                    logger.error(f"Failed to fetch buy order details for {symbol}, order {buy_order_id}")
+                    continue
+                buy_quantity = float(order_details['executedSize'])
 
                 # Verify balance and place SELL order with retries
                 best_bid, best_ask = get_current_price(symbol)
@@ -548,9 +551,8 @@ async def check_alerts(bot: Bot):
                     continue
                 precision = int(symbol_info['basePrecision'])
                 quote_precision = int(symbol_info['quotePrecision'])
-                min_quantity = float(symbol_info['minSize'])
-                base_buy_quantity = float(buy_quantity)
-                sell_quantity = base_buy_quantity * 0.995
+                min_quantity = float(symbol_info.get('minSize', 0.0001))  # Fallback to 0.0001 if minSize is missing
+                sell_quantity = buy_quantity
                 sell_price = float(f"{sell_price:.{quote_precision}f}")
 
                 # Retry placing limit sell order with decreasing quantity
@@ -572,10 +574,10 @@ async def check_alerts(bot: Bot):
                         break
                     logger.warning(f"Attempt {attempt + 1} failed to place SELL order for {symbol}, reducing quantity")
                     reduction_factor = reduction_factors[attempt]
-                    sell_quantity = base_buy_quantity * reduction_factor
+                    sell_quantity = buy_quantity * reduction_factor
                     sell_quantity = float(f"{sell_quantity:.{precision}f}")
                     attempt += 1
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(2)
 
                 if not sell_order_id:
                     logger.error(f"Failed to place SELL order for {symbol} after {max_attempts} attempts")

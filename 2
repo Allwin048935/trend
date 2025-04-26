@@ -200,9 +200,9 @@ def check_price_cross_trendlines(trendlines, df_15m):
         time_from_start = (last_timestamp - tl['x1']).total_seconds() / 3600
         tl_value = tl['y1'] + tl['slope'] * time_from_start
         
-        if (prev_low <= tl_value and last_low > tl_value):
+        if prev_low <= tl_value: #and last_low > tl_value:
             cross_over = True
-        if (last_low >= tl_value and curr_low < tl_value) or (last_high >= tl_value and curr_high < tl_value):
+        if (last_low >= tl_value and curr_low < tl_value): #or (last_high >= tl_value and curr_high < tl_value):
             cross_under = True
     
     return cross_over, cross_under

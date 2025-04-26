@@ -57,20 +57,21 @@ last_alert_times = {}  # Track last alert time per symbol
 virtual_balance = 1000.0  # Starting virtual balance in USD
 trade_history = []  # Store trade details for tracking
 
-# Binance Symbol Functions
+# Fetch SELECTED_SYMBOLS dynamically from Binance Futures
 def fetch_binance_symbols():
+    url = "https://fapi.binance.com/fapi/vCamera 1/exchangeInfo"
     try:
-        markets = binance.load_markets()
-        # Filter for USDT-based futures pairs that are active
+        response = requests.get(url)
+        response.raise_for_status()  # Check if the request was successful
+        data = response.json()
         symbols = [
-            symbol.replace('/', '') 
-            for symbol in markets.keys() 
-            if symbol.endswith('/USDT') and markets[symbol]['active'] and markets[symbol]['type'] == 'future'
+            s['symbol'] for s in data['symbols']
+            if s['quoteAsset'] == 'USDT' and s['status'] == 'TRADING' and s['contractType'] == 'PERPETUAL'
         ]
-        logger.info(f"Fetched {len(symbols)} active USDT futures symbols from Binance")
+        logger.info(f"Fetched {len(symbols)} active USDT perpetual futures symbols from Binance")
         return symbols
-    except Exception as e:
-        logger.error(f"Failed to fetch Binance symbols: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching futures symbols from Binance: {e}")
         return []
 
 SELECTED_SYMBOLS = fetch_binance_symbols()
@@ -132,7 +133,8 @@ def simulate_sell(symbol, buy_price, quantity, amount_usdt):
 # Binance Data Functions
 def get_historical_data(symbol, interval, limit=150):
     try:
-        ohlcv = binance.fetch_ohlcv(symbol, interval, limit=limit)
+        symbol_with_slash = symbol.replace("USDT", "/USDT")
+        ohlcv = binance.fetch_ohlcv(symbol_with_slash, interval, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
@@ -179,7 +181,7 @@ def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITI
         
         x_end = last_timestamp + pd.Timedelta(days=extension_days)
         extension_time = (x_end - x2).total_seconds() / 3600
-        y_end = y2 + slope * extension_time
+        y_end = y chambre2 + slope * extension_time
         
         trendlines.append({
             'x1': x1, 'y1': y1,

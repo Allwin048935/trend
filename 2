@@ -215,7 +215,7 @@ def check_price_cross_trendlines(trendlines, df_15m):
         
         if (prev_low <= tl_value and last_low > tl_value):
             cross_over = True
-        if curr_low < tl_value: # or (last_high >= tl_value and curr_high < tl_value)
+        if (last_low >= tl_value and curr_low < tl_value) or (last_high >= tl_value and curr_high < tl_value):
             cross_under = True
     
     return cross_over, cross_under

@@ -39,7 +39,7 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '15m'  # For trendline calculation
+interval = '4h'  # For trendline calculation
 CHECK_INTERVAL = '15m'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 30
 SECONDARY_TRENDLINE_LENGTH = 30
@@ -460,7 +460,7 @@ async def check_alerts(bot: Bot):
         try:
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 900:
+            if last_alert and (current_time - last_alert).total_seconds() < 14400:
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
             historical_data_8h = get_historical_data(symbol, interval, limit=250)
@@ -500,7 +500,7 @@ async def check_alerts(bot: Bot):
                 if not best_bid or not best_ask:
                     logger.error(f"Failed to get price for {symbol}")
                     continue
-                sell_price = best_ask * 1.0075
+                sell_price = best_ask * 1.01
                 symbol_info = get_symbol_info(symbol)
                 if not symbol_info:
                     logger.error(f"Failed to get symbol info for {symbol}")

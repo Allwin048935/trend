@@ -59,7 +59,7 @@ trade_history = []  # Store trade details for tracking
 
 # Fetch SELECTED_SYMBOLS dynamically from Binance Futures
 def fetch_binance_symbols():
-    url = "https://fapi.binance.com/fapi/vCamera 1/exchangeInfo"
+    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
     try:
         response = requests.get(url)
         response.raise_for_status()  # Check if the request was successful
@@ -181,7 +181,7 @@ def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITI
         
         x_end = last_timestamp + pd.Timedelta(days=extension_days)
         extension_time = (x_end - x2).total_seconds() / 3600
-        y_end = y chambre2 + slope * extension_time
+        y_end = y2 + slope * extension_time  # Fixed typo: 'y chambre2' to 'y2'
         
         trendlines.append({
             'x1': x1, 'y1': y1,

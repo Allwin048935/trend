@@ -36,12 +36,12 @@ logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
 interval = '4h'  # For trendline calculation
-CHECK_INTERVAL = '15m'  # For price cross check
+CHECK_INTERVAL = '4h'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 30
 SECONDARY_TRENDLINE_LENGTH = 30
 INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
 MAX_STORED_TRENDLINES = 9  # Maximum total stored trendlines per type
-TRADE_FEE_PERCENT = 0.1  # 0.1% fee for buy and sell
+TRADE_FEE_PERCENT = 0.05  # 0.1% fee for buy and sell
 
 # Binance client
 binance = ccxt.binance({
@@ -222,9 +222,9 @@ def check_price_cross_trendlines(trendlines, df_15m):
         time_from_start = (last_timestamp - tl['x1']).total_seconds() / 3600
         tl_value = tl['y1'] + tl['slope'] * time_from_start
         
-        if (prev_low <= tl_value and last_low > tl_value):
+        if prev_close <= tl_value and last_close > tl_value:
             cross_over = True
-        if (last_low >= tl_value and curr_low < tl_value) or (last_high >= tl_value and curr_high < tl_value):
+        if prev_close >= tl_value and last_close < tl_value:
             cross_under = True
     
     return cross_over, cross_under
@@ -358,7 +358,7 @@ async def check_alerts(bot: Bot):
         try:
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 900:
+            if last_alert and (current_time - last_alert).total_seconds() < 14400:
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
             historical_data_8h = get_historical_data(symbol, interval, limit=250)
@@ -446,9 +446,9 @@ async def check_alerts(bot: Bot):
                 elif cross_under:
                     sell_trigger = True
                     sell_reason = "price cross under trendline"
-                elif profit_percentage <= -0.5:  # Stop-loss at -0.5%
+                elif profit_percentage <= -1:  # Stop-loss at -0.5%
                     sell_trigger = True
-                    sell_reason = "stop-loss triggered at -0.5%"
+                    sell_reason = "stop-loss triggered at -1%"
                 
                 if sell_trigger:
                     sell_price = simulate_sell(symbol, buy_price, quantity, amount_usdt)

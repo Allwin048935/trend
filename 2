@@ -401,7 +401,7 @@ async def check_alerts(bot: Bot):
                     'quantity': quantity,
                     'amount_usdt': amount_usdt
                 }
-                message = (f"Simulated BUY for {symbol} at {buy_price:.8f}\n"
+                message = (f"Simulated BUY for #{symbol} at {buy_price:.8f}\n"
                           f"Quantity: {quantity:.8f}, Amount: {amount_usdt:.2f} USDT\n"
                           f"Fee: {amount_usdt * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
                           f"Virtual Balance: {virtual_balance:.2f} USDT")
@@ -461,7 +461,7 @@ async def check_alerts(bot: Bot):
                     overall_profit_loss = sum(trade['profit_percentage'] for trade in trade_history)
                     open_trades = len(active_positions)
                     del active_positions[symbol]
-                    message = (f"Simulated SELL for {symbol} at {sell_price:.8f}\n"
+                    message = (f"Simulated SELL for #{symbol} at {sell_price:.8f}\n"
                               f"Buy Price: {buy_price:.8f}\n"
                               f"Quantity: {quantity:.8f}, Proceeds: {quantity * sell_price:.2f} USDT\n"
                               f"Fee: {(quantity * sell_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"

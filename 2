@@ -41,6 +41,7 @@ PRIMARY_TRENDLINE_LENGTH = 30
 SECONDARY_TRENDLINE_LENGTH = 30
 INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
 MAX_STORED_TRENDLINES = 9  # Maximum total stored trendlines per type
+TRADE_FEE_PERCENT = 0.1  # 0.1% fee for buy and sell
 
 # Binance client
 binance = ccxt.binance({
@@ -104,8 +105,10 @@ def simulate_buy(symbol, amount_usdt=15.0):
         logger.error(f"Insufficient virtual balance for BUY on {symbol}: {virtual_balance} < {amount_usdt}")
         return None, None, None
     quantity = amount_usdt / current_price
-    virtual_balance -= amount_usdt
-    logger.info(f"Simulated BUY for {symbol}: Price {current_price:.5f}, Quantity {quantity:.8f}, Amount {amount_usdt:.2f}, New Balance {virtual_balance:.2f}")
+    fee = amount_usdt * (TRADE_FEE_PERCENT / 100)  # 0.1% fee
+    total_deduction = amount_usdt + fee
+    virtual_balance -= total_deduction
+    logger.info(f"Simulated BUY for {symbol}: Price {current_price:.8f}, Quantity {quantity:.8f}, Amount {amount_usdt:.2f}, Fee {fee:.4f}, Total Deduction {total_deduction:.4f}, New Balance {virtual_balance:.2f}")
     return current_price, quantity, amount_usdt
 
 def simulate_sell(symbol, buy_price, quantity, amount_usdt):
@@ -116,7 +119,10 @@ def simulate_sell(symbol, buy_price, quantity, amount_usdt):
         return None
     profit_percentage = ((current_price - buy_price) / buy_price) * 100
     proceeds = quantity * current_price
-    virtual_balance += proceeds
+    fee = proceeds * (TRADE_FEE_PERCENT / 100)  # 0.1% fee
+    net_proceeds = proceeds - fee
+    balance_before = virtual_balance
+    virtual_balance += net_proceeds
     trade_history.append({
         'symbol': symbol,
         'buy_price': buy_price,
@@ -124,10 +130,13 @@ def simulate_sell(symbol, buy_price, quantity, amount_usdt):
         'quantity': quantity,
         'profit_percentage': profit_percentage,
         'proceeds': proceeds,
+        'fee': fee,
+        'net_proceeds': net_proceeds,
+        'balance_before': balance_before,
         'balance_after': virtual_balance,
         'timestamp': datetime.now()
     })
-    logger.info(f"Simulated SELL for {symbol}: Sell Price {current_price:.5f}, Quantity {quantity:.8f}, Proceeds {proceeds:.2f}, Profit {profit_percentage:.2f}%, New Balance {virtual_balance:.2f}")
+    logger.info(f"Simulated SELL for {symbol}: Buy Price {buy_price:.8f}, Sell Price {current_price:.8f}, Quantity {quantity:.8f}, Proceeds {proceeds:.2f}, Fee {fee:.4f}, Net Proceeds {net_proceeds:.4f}, Profit {profit_percentage:.2f}%, Balance Before {balance_before:.2f}, Balance After {virtual_balance:.2f}")
     return current_price
 
 # Binance Data Functions
@@ -181,7 +190,7 @@ def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITI
         
         x_end = last_timestamp + pd.Timedelta(days=extension_days)
         extension_time = (x_end - x2).total_seconds() / 3600
-        y_end = y2 + slope * extension_time  # Fixed typo: 'y chambre2' to 'y2'
+        y_end = y2 + slope * extension_time
         
         trendlines.append({
             'x1': x1, 'y1': y1,
@@ -392,8 +401,9 @@ async def check_alerts(bot: Bot):
                     'quantity': quantity,
                     'amount_usdt': amount_usdt
                 }
-                message = (f"Simulated BUY for {symbol} at {buy_price:.5f}\n"
+                message = (f"Simulated BUY for {symbol} at {buy_price:.8f}\n"
                           f"Quantity: {quantity:.8f}, Amount: {amount_usdt:.2f} USDT\n"
+                          f"Fee: {amount_usdt * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
                           f"Virtual Balance: {virtual_balance:.2f} USDT")
                 title = f'Price Cross Over Trendline {symbol}'
                 image_buffer = plot_candles(historical_data_8h, symbol, title)
@@ -415,7 +425,7 @@ async def check_alerts(bot: Bot):
                 else:
                     logger.warning(f"Failed to generate chart for {symbol}")
             
-            # Check for SELL condition (1% profit or cross under)
+            # Check for SELL condition (1% profit, cross under, or stop-loss)
             if symbol in active_positions:
                 position = active_positions[symbol]
                 buy_price = position['buy_price']
@@ -436,6 +446,9 @@ async def check_alerts(bot: Bot):
                 elif cross_under:
                     sell_trigger = True
                     sell_reason = "price cross under trendline"
+                elif profit_percentage <= -0.5:  # Stop-loss at -0.5%
+                    sell_trigger = True
+                    sell_reason = "stop-loss triggered at -0.5%"
                 
                 if sell_trigger:
                     sell_price = simulate_sell(symbol, buy_price, quantity, amount_usdt)
@@ -443,11 +456,20 @@ async def check_alerts(bot: Bot):
                         logger.error(f"Failed to simulate SELL for {symbol}")
                         failed_symbols.add(symbol)  # Mark symbol as problematic
                         continue
+                    # Calculate trade metrics
+                    total_trades = len(trade_history)
+                    overall_profit_loss = sum(trade['profit_percentage'] for trade in trade_history)
+                    open_trades = len(active_positions)
                     del active_positions[symbol]
-                    message = (f"Simulated SELL for {symbol} at {sell_price:.5f}\n"
+                    message = (f"Simulated SELL for {symbol} at {sell_price:.8f}\n"
+                              f"Buy Price: {buy_price:.8f}\n"
                               f"Quantity: {quantity:.8f}, Proceeds: {quantity * sell_price:.2f} USDT\n"
+                              f"Fee: {(quantity * sell_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
                               f"Profit: {profit_percentage:.2f}%\n"
                               f"Reason: {sell_reason}\n"
+                              f"Total Completed Trades: {total_trades}\n"
+                              f"Overall Profit/Loss: {overall_profit_loss:.2f}%\n"
+                              f"Current Open Trades: {open_trades}\n"
                               f"Virtual Balance: {virtual_balance:.2f} USDT")
                     title = f'Position Closed - {sell_reason} {symbol}'
                     image_buffer = plot_candles(historical_data_8h, symbol, title)

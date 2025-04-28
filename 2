@@ -35,7 +35,7 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '8h'  # For trendline calculation
+interval = '4h'  # For trendline calculation
 CHECK_INTERVAL = '15m'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 30
 SECONDARY_TRENDLINE_LENGTH = 30
@@ -609,10 +609,10 @@ async def check_alerts(bot: Bot):
                 
                 close_trigger = False
                 close_reason = ""
-                if profit_percentage >= 1.0:
+                if profit_percentage >= 10:
                     close_trigger = True
                     close_reason = "1% profit target reached"
-                elif profit_percentage <= -1.0:
+                elif profit_percentage <= -5:
                     close_trigger = True
                     close_reason = "stop-loss triggered at -1%"
                 

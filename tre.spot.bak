@@ -1,0 +1,498 @@
+import requests
+import ccxt
+import pandas as pd
+import matplotlib.pyplot as plt
+import mplfinance as mpf
+from io import BytesIO
+import asyncio
+import nest_asyncio
+from telegram import Bot, Update
+from telegram.ext import Application, ContextTypes
+import config  # Import the config module
+import ta  # Import ta library
+import logging
+from datetime import datetime, timedelta
+import time
+import telegram.error
+
+# Set up logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+file_handler = logging.FileHandler('trading_bot.log')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.WARNING)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+logger.handlers.clear()
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('ccxt').setLevel(logging.WARNING)
+
+# Time interval and trendline parameters
+interval = '4h'  # For trendline calculation
+CHECK_INTERVAL = '4h'  # For price cross check
+PRIMARY_TRENDLINE_LENGTH = 30
+SECONDARY_TRENDLINE_LENGTH = 30
+INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
+MAX_STORED_TRENDLINES = 9  # Maximum total stored trendlines per type
+TRADE_FEE_PERCENT = 0.05  # 0.1% fee for buy and sell
+
+# Binance client
+binance = ccxt.binance({
+    'apiKey': config.BINANCE_API_KEY,
+    'secret': config.BINANCE_API_SECRET,
+    'enableRateLimit': True,
+    'options': {'defaultType': 'future'}
+})
+
+# Store trendlines, active positions, last alert times, and virtual balance
+stored_trendlines = {}  # Format: {symbol: {'price': {'lines': [...], 'stored_time': datetime}, 'rsi': {...}}}
+active_positions = {}  # Format: {symbol: {'buy_price': float, 'quantity': float, 'amount_usdt': float}}
+last_alert_times = {}  # Track last alert time per symbol
+virtual_balance = 1000.0  # Starting virtual balance in USD
+trade_history = []  # Store trade details for tracking
+
+# Fetch SELECTED_SYMBOLS dynamically from Binance Futures
+def fetch_binance_symbols():
+    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Check if the request was successful
+        data = response.json()
+        symbols = [
+            s['symbol'] for s in data['symbols']
+            if s['quoteAsset'] == 'USDT' and s['status'] == 'TRADING' and s['contractType'] == 'PERPETUAL'
+        ]
+        logger.info(f"Fetched {len(symbols)} active USDT perpetual futures symbols from Binance")
+        return symbols
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching futures symbols from Binance: {e}")
+        return []
+
+SELECTED_SYMBOLS = fetch_binance_symbols()
+
+# Helper Functions for Virtual Trading
+def get_current_price(symbol, retries=3, delay=2):
+    symbol_with_slash = symbol.replace("USDT", "/USDT")  # Convert BTCUSDT to BTC/USDT
+    for attempt in range(retries):
+        try:
+            ticker = binance.fetch_ticker(symbol_with_slash)
+            current_price = ticker['last']  # Use the last traded price
+            if current_price is None:
+                raise ValueError("Last price is None")
+            return current_price
+        except Exception as e:
+            logger.warning(f"Failed to fetch price for {symbol} on attempt {attempt + 1}/{retries}: {e}")
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                logger.error(f"Exhausted retries for {symbol}: No price data")
+                return None
+
+def simulate_buy(symbol, amount_usdt=15.0):
+    global virtual_balance
+    current_price = get_current_price(symbol)
+    if current_price is None:
+        logger.error(f"Cannot simulate BUY for {symbol}: No price data")
+        return None, None, None
+    if virtual_balance < amount_usdt:
+        logger.error(f"Insufficient virtual balance for BUY on {symbol}: {virtual_balance} < {amount_usdt}")
+        return None, None, None
+    quantity = amount_usdt / current_price
+    fee = amount_usdt * (TRADE_FEE_PERCENT / 100)  # 0.1% fee
+    total_deduction = amount_usdt + fee
+    virtual_balance -= total_deduction
+    logger.info(f"Simulated BUY for {symbol}: Price {current_price:.8f}, Quantity {quantity:.8f}, Amount {amount_usdt:.2f}, Fee {fee:.4f}, Total Deduction {total_deduction:.4f}, New Balance {virtual_balance:.2f}")
+    return current_price, quantity, amount_usdt
+
+def simulate_sell(symbol, buy_price, quantity, amount_usdt):
+    global virtual_balance
+    current_price = get_current_price(symbol)
+    if current_price is None:
+        logger.error(f"Cannot simulate SELL for {symbol}: No price data")
+        return None
+    profit_percentage = ((current_price - buy_price) / buy_price) * 100
+    proceeds = quantity * current_price
+    fee = proceeds * (TRADE_FEE_PERCENT / 100)  # 0.1% fee
+    net_proceeds = proceeds - fee
+    balance_before = virtual_balance
+    virtual_balance += net_proceeds
+    trade_history.append({
+        'symbol': symbol,
+        'buy_price': buy_price,
+        'sell_price': current_price,
+        'quantity': quantity,
+        'profit_percentage': profit_percentage,
+        'proceeds': proceeds,
+        'fee': fee,
+        'net_proceeds': net_proceeds,
+        'balance_before': balance_before,
+        'balance_after': virtual_balance,
+        'timestamp': datetime.now()
+    })
+    logger.info(f"Simulated SELL for {symbol}: Buy Price {buy_price:.8f}, Sell Price {current_price:.8f}, Quantity {quantity:.8f}, Proceeds {proceeds:.2f}, Fee {fee:.4f}, Net Proceeds {net_proceeds:.4f}, Profit {profit_percentage:.2f}%, Balance Before {balance_before:.2f}, Balance After {virtual_balance:.2f}")
+    return current_price
+
+# Binance Data Functions
+def get_historical_data(symbol, interval, limit=150):
+    try:
+        symbol_with_slash = symbol.replace("USDT", "/USDT")
+        ohlcv = binance.fetch_ohlcv(symbol_with_slash, interval, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
+        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
+        return df
+    except ccxt.ExchangeError as e:
+        logger.error(f"Binance fetch error for {symbol}: {e}")
+        return pd.DataFrame()
+
+# Trendline Functions
+def find_pivot_points(series, length, left_length):
+    pivots_high = pd.Series(index=series.index, dtype=float)
+    pivots_low = pd.Series(index=series.index, dtype=float)
+    
+    for i in range(left_length, len(series) - left_length):
+        window = series.iloc[i-left_length:i+left_length+1]
+        if not window.isna().any() and series.iloc[i] == window.max():
+            pivots_high.iloc[i] = series.iloc[i]
+        if not window.isna().any() and series.iloc[i] == window.min():
+            pivots_low.iloc[i] = series.iloc[i]
+    
+    return pivots_high, pivots_low
+
+def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITIAL_MAX_TRENDLINES):
+    trendlines = []
+    pivot_points = pivots.dropna()
+    if len(pivot_points) < 2:
+        return trendlines
+    
+    timestamps = df['timestamp']
+    last_timestamp = timestamps.iloc[-1]
+    
+    for i in range(1, len(pivot_points)):
+        idx1 = pivot_points.index[i-1]
+        idx2 = pivot_points.index[i]
+        
+        x1 = timestamps.loc[idx1]
+        x2 = timestamps.loc[idx2]
+        y1 = pivot_points.iloc[i-1]
+        y2 = pivot_points.iloc[i]
+        
+        time_diff = (x2 - x1).total_seconds() / 3600
+        slope = (y2 - y1) / time_diff if time_diff != 0 else 0
+        
+        x_end = last_timestamp + pd.Timedelta(days=extension_days)
+        extension_time = (x_end - x2).total_seconds() / 3600
+        y_end = y2 + slope * extension_time
+        
+        trendlines.append({
+            'x1': x1, 'y1': y1,
+            'x2': x_end, 'y2': y_end,
+            'slope': slope,
+            'timestamp': x2
+        })
+    
+    return trendlines[:initial_max] if len(trendlines) > initial_max else trendlines
+
+def check_price_cross_trendlines(trendlines, df_15m):
+    if len(df_15m) < 3 or not trendlines:
+        return False, False
+    curr_low = df_15m['Low'].iloc[-1] 
+    last_low = df_15m['Low'].iloc[-2]
+    prev_low = df_15m['Low'].iloc[-3]
+    curr_close = df_15m['Close'].iloc[-1]
+    last_close = df_15m['Close'].iloc[-2]
+    prev_close = df_15m['Close'].iloc[-3]
+    curr_high = df_15m['High'].iloc[-1]
+    last_high = df_15m['High'].iloc[-2]
+    prev_high = df_15m['High'].iloc[-3]
+    last_timestamp = df_15m['timestamp'].iloc[-1]
+    
+    cross_over = False
+    cross_under = False
+    
+    for tl in trendlines:
+        time_from_start = (last_timestamp - tl['x1']).total_seconds() / 3600
+        tl_value = tl['y1'] + tl['slope'] * time_from_start
+        
+        if prev_close <= tl_value and last_close > tl_value:
+            cross_over = True
+        if prev_close >= tl_value and last_close < tl_value:
+            cross_under = True
+    
+    return cross_over, cross_under
+
+def plot_candles(df, symbol, title):
+    if df.empty or len(df) < 5:
+        logger.warning(f"Not enough data to plot candles for {symbol}: {len(df)} rows")
+        return None
+    
+    try:
+        df_plot = df.set_index('timestamp')
+        df_plot = df_plot[['Open', 'High', 'Low', 'Close', 'RSI']].copy()
+        
+        mc = mpf.make_marketcolors(
+            up='#2fc71e', down='#ed2f1a', edge='white', wick='white', volume='in', inherit=True
+        )
+        s = mpf.make_mpf_style(
+            base_mpl_style=['dark_background'], marketcolors=mc, y_on_right=True,
+            facecolor='black', edgecolor='white', figcolor='black', gridcolor='gray', gridstyle='--'
+        )
+        
+        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+        price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+        
+        primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+        primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+        secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+        secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+        
+        rsi_high_pivots, rsi_low_pivots = find_pivot_points(df['RSI'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+        rsi_sec_high_pivots, rsi_sec_low_pivots = find_pivot_points(df['RSI'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+        
+        rsi_primary_high_trendlines = calculate_trendlines(df, rsi_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+        rsi_primary_low_trendlines = calculate_trendlines(df, rsi_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+        rsi_secondary_high_trendlines = calculate_trendlines(df, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+        rsi_secondary_low_trendlines = calculate_trendlines(df, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+        
+        add_plots = []
+        
+        def trendline_to_series(df, tl):
+            series = pd.Series(index=df['timestamp'], dtype=float)
+            start_idx = df['timestamp'].searchsorted(tl['x1'])
+            end_idx = df['timestamp'].searchsorted(tl['x2'])
+            if end_idx >= len(df):
+                end_idx = len(df) - 1
+            
+            if start_idx < len(df) and end_idx < len(df):
+                time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
+                if time_diff != 0:
+                    slope = (tl['y2'] - tl['y1']) / time_diff
+                    for i in range(start_idx, end_idx + 1):
+                        time_from_start = (df['timestamp'].iloc[i] - tl['x1']).total_seconds() / 3600
+                        series.iloc[i] = tl['y1'] + slope * time_from_start
+            return series
+        
+        if symbol in stored_trendlines and 'price' in stored_trendlines[symbol]:
+            for tl in stored_trendlines[symbol]['price']['lines']:
+                color = '#cf0a83' if tl['slope'] < 0 else '#027521'
+                trend_series = trendline_to_series(df, tl)
+                add_plots.append(mpf.make_addplot(trend_series, color=color, width=0.5, panel=0))
+        
+        for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
+            color = 'red' if tl['slope'] < 0 else 'green'
+            trend_series = trendline_to_series(df, tl)
+            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=0.5, panel=0))
+        
+        rsi = df_plot['RSI']
+        rsi_plot = [
+            mpf.make_addplot(rsi, color='white', panel=1, ylabel='RSI'),
+            mpf.make_addplot([70] * len(rsi), color='red', linestyle='--', alpha=0.5, panel=1),
+            mpf.make_addplot([30] * len(rsi), color='green', linestyle='--', alpha=0.5, panel=1),
+        ]
+        
+        if symbol in stored_trendlines and 'rsi' in stored_trendlines[symbol]:
+            for tl in stored_trendlines[symbol]['rsi']['lines']:
+                color = '#cf0a83' if tl['slope'] < 0 else '#027521'
+                trend_series = trendline_to_series(df, tl)
+                rsi_plot.append(mpf.make_addplot(trend_series, color=color, width=0.5, panel=1))
+        
+        for tl in rsi_primary_high_trendlines + rsi_primary_low_trendlines + rsi_secondary_high_trendlines + rsi_secondary_low_trendlines:
+            color = 'red' if tl['slope'] < 0 else 'green'
+            trend_series = trendline_to_series(df, tl)
+            rsi_plot.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=0.5, panel=1))
+        
+        all_plots = add_plots + rsi_plot
+        
+        fig, axlist = mpf.plot(
+            df_plot[['Open', 'High', 'Low', 'Close']],
+            type='candle',
+            style=s,
+            figratio=(10, 8),
+            datetime_format='%H:%M',
+            ylabel='Price ($)',
+            addplot=all_plots,
+            panel_ratios=(3, 1),
+            returnfig=True,
+            tight_layout=True
+        )
+        
+        axlist[0].set_title(f"{symbol} - {title}", fontsize=25, style='italic', fontfamily='sans-serif', color='white')
+        
+        buf = BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', facecolor='black')
+        buf.seek(0)
+        plt.close(fig)
+        return buf
+    except Exception as e:
+        logger.error(f"Error plotting chart for {symbol}: {e}")
+        return None
+
+async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer):
+    if image_buffer is None:
+        logger.warning(f"No image buffer for {symbol}, skipping message")
+        return
+    try:
+        await bot.send_photo(chat_id=chat_id, photo=image_buffer)
+        await bot.send_message(chat_id=chat_id, text=message)
+        logger.info(f"Sent alert for {symbol}: {message}")
+    except Exception as e:
+        logger.error(f"Failed to send Telegram message for {symbol}: {e}")
+
+async def check_alerts(bot: Bot):
+    if not SELECTED_SYMBOLS:
+        logger.error("No symbols selected to check - bot cannot proceed without symbols")
+        return
+    failed_symbols = set()  # Track symbols that fail repeatedly
+    for symbol in SELECTED_SYMBOLS:
+        if symbol in failed_symbols:
+            logger.info(f"Skipping {symbol} due to previous price fetch failures")
+            continue
+        try:
+            current_time = datetime.now()
+            last_alert = last_alert_times.get(symbol)
+            if last_alert and (current_time - last_alert).total_seconds() < 14400:
+                logger.info(f"Cooldown active for {symbol}, skipping alert")
+                continue
+            historical_data_8h = get_historical_data(symbol, interval, limit=250)
+            if historical_data_8h.empty:
+                logger.warning(f"No 8h historical data fetched for {symbol}")
+                continue
+            historical_data_15m = get_historical_data(symbol, CHECK_INTERVAL, limit=5)
+            if historical_data_15m.empty or len(historical_data_15m) < 5:
+                logger.warning(f"No or insufficient 15m historical data fetched for {symbol}")
+                continue
+            historical_data_8h.name = symbol
+            historical_data_15m.name = symbol
+            price_high_pivots, price_low_pivots = find_pivot_points(historical_data_8h['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+            price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(historical_data_8h['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+            primary_high_trendlines = calculate_trendlines(historical_data_8h, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+            primary_low_trendlines = calculate_trendlines(historical_data_8h, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+            secondary_high_trendlines = calculate_trendlines(historical_data_8h, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+            secondary_low_trendlines = calculate_trendlines(historical_data_8h, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+            rsi_high_pivots, rsi_low_pivots = find_pivot_points(historical_data_8h['RSI'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+            rsi_sec_high_pivots, rsi_sec_low_pivots = find_pivot_points(historical_data_8h['RSI'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+            rsi_primary_high_trendlines = calculate_trendlines(historical_data_8h, rsi_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+            rsi_primary_low_trendlines = calculate_trendlines(historical_data_8h, rsi_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+            rsi_secondary_high_trendlines = calculate_trendlines(historical_data_8h, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+            rsi_secondary_low_trendlines = calculate_trendlines(historical_data_8h, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+            current_stored = stored_trendlines.get(symbol, {'price': {'lines': [], 'stored_time': None}, 'rsi': {'lines': [], 'stored_time': None}})
+            all_price_trendlines = (current_stored['price']['lines'] + 
+                                   primary_high_trendlines + primary_low_trendlines + 
+                                   secondary_high_trendlines + secondary_low_trendlines)
+            cross_over, cross_under = check_price_cross_trendlines(all_price_trendlines, historical_data_15m)
+            
+            # Check for BUY condition
+            if cross_over and symbol not in active_positions:
+                buy_price, quantity, amount_usdt = simulate_buy(symbol)
+                if buy_price is None:
+                    logger.error(f"Failed to simulate BUY for {symbol}")
+                    failed_symbols.add(symbol)  # Mark symbol as problematic
+                    continue
+                active_positions[symbol] = {
+                    'buy_price': buy_price,
+                    'quantity': quantity,
+                    'amount_usdt': amount_usdt
+                }
+                message = (f"Simulated BUY for #{symbol} at {buy_price:.8f}\n"
+                          f"Quantity: {quantity:.8f}, Amount: {amount_usdt:.2f} USDT\n"
+                          f"Fee: {amount_usdt * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                          f"Virtual Balance: {virtual_balance:.2f} USDT")
+                title = f'Price Cross Over Trendline {symbol}'
+                image_buffer = plot_candles(historical_data_8h, symbol, title)
+                if image_buffer:
+                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer)
+                    last_alert_times[symbol] = current_time
+                    new_price_lines = primary_high_trendlines + primary_low_trendlines
+                    updated_price_lines = current_stored['price']['lines'] + new_price_lines
+                    if len(updated_price_lines) > MAX_STORED_TRENDLINES:
+                        updated_price_lines = sorted(updated_price_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
+                    new_rsi_lines = rsi_primary_high_trendlines + rsi_primary_low_trendlines
+                    updated_rsi_lines = current_stored['rsi']['lines'] + new_rsi_lines
+                    if len(updated_rsi_lines) > MAX_STORED_TRENDLINES:
+                        updated_rsi_lines = sorted(updated_rsi_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
+                    stored_trendlines[symbol] = {
+                        'price': {'lines': updated_price_lines, 'stored_time': current_time},
+                        'rsi': {'lines': updated_rsi_lines, 'stored_time': current_time}
+                    }
+                else:
+                    logger.warning(f"Failed to generate chart for {symbol}")
+            
+            # Check for SELL condition (1% profit, cross under, or stop-loss)
+            if symbol in active_positions:
+                position = active_positions[symbol]
+                buy_price = position['buy_price']
+                quantity = position['quantity']
+                amount_usdt = position['amount_usdt']
+                current_price = get_current_price(symbol)
+                if current_price is None:
+                    logger.error(f"Failed to get price for {symbol}")
+                    failed_symbols.add(symbol)  # Mark symbol as problematic
+                    continue
+                profit_percentage = ((current_price - buy_price) / buy_price) * 100
+                
+                sell_trigger = False
+                sell_reason = ""
+                if profit_percentage >= 1.0:
+                    sell_trigger = True
+                    sell_reason = "1% profit target reached"
+                elif cross_under:
+                    sell_trigger = True
+                    sell_reason = "price cross under trendline"
+                elif profit_percentage <= -1:  # Stop-loss at -0.5%
+                    sell_trigger = True
+                    sell_reason = "stop-loss triggered at -1%"
+                
+                if sell_trigger:
+                    sell_price = simulate_sell(symbol, buy_price, quantity, amount_usdt)
+                    if sell_price is None:
+                        logger.error(f"Failed to simulate SELL for {symbol}")
+                        failed_symbols.add(symbol)  # Mark symbol as problematic
+                        continue
+                    # Calculate trade metrics
+                    total_trades = len(trade_history)
+                    overall_profit_loss = sum(trade['profit_percentage'] for trade in trade_history)
+                    open_trades = len(active_positions)
+                    del active_positions[symbol]
+                    message = (f"Simulated SELL for #{symbol} at {sell_price:.8f}\n"
+                              f"Buy Price: {buy_price:.8f}\n"
+                              f"Quantity: {quantity:.8f}, Proceeds: {quantity * sell_price:.2f} USDT\n"
+                              f"Fee: {(quantity * sell_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                              f"Profit: {profit_percentage:.2f}%\n"
+                              f"Reason: {sell_reason}\n"
+                              f"Total Completed Trades: {total_trades}\n"
+                              f"Overall Profit/Loss: {overall_profit_loss:.2f}%\n"
+                              f"Current Open Trades: {open_trades}\n"
+                              f"Virtual Balance: {virtual_balance:.2f} USDT")
+                    title = f'Position Closed - {sell_reason} {symbol}'
+                    image_buffer = plot_candles(historical_data_8h, symbol, title)
+                    if image_buffer:
+                        await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer)
+                        last_alert_times[symbol] = current_time
+                    else:
+                        logger.warning(f"Failed to generate chart for {symbol}")
+        except Exception as e:
+            logger.error(f"Error checking {symbol}: {e}")
+            failed_symbols.add(symbol)  # Mark symbol as problematic
+
+async def run_alert_loop(application: Application):
+    bot = application.bot
+    while True:
+        await check_alerts(bot)
+        await asyncio.sleep(300)
+
+async def main():
+    application = Application.builder().token(config.TELEGRAM_TOKEN).build()
+    asyncio.create_task(run_alert_loop(application))
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    nest_asyncio.apply()
+    asyncio.run(main())

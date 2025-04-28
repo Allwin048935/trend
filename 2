@@ -53,7 +53,7 @@ binance = ccxt.binance({
 
 # Store trendlines, active positions, last alert times, and virtual balance
 stored_trendlines = {}  # Format: {symbol: {'price': {'lines': [...], 'stored_time': datetime}, 'rsi': {...}}}
-active_positions = {}  # Format: {symbol: {'type': 'long'/'short', 'entry_price': float, 'quantity': float, 'amount_usdt': float}}
+active_positions = {}  # Format: {symbol: {'type': 'long'/'short', 'entry_price': float, 'quantity': float, 'amount_usdt': float, 'entry_fee': float}}
 last_alert_times = {}  # Track last alert time per symbol
 virtual_balance = 1000.0  # Starting virtual balance in USD
 trade_history = []  # Store trade details for tracking
@@ -115,34 +115,34 @@ def simulate_open_long(symbol, amount_usdt=15.0):
     current_price = get_current_price(symbol)
     if current_price is None:
         logger.error(f"Cannot simulate LONG for {symbol}: No price data")
-        return None, None, None
+        return None, None, None, None
     if virtual_balance < amount_usdt:
         logger.error(f"Insufficient virtual balance for LONG on {symbol}: {virtual_balance} < {amount_usdt}")
-        return None, None, None
+        return None, None, None, None
     quantity = amount_usdt / current_price
     fee = amount_usdt * (TRADE_FEE_PERCENT / 100)  # 0.05% fee
     total_deduction = amount_usdt + fee
     virtual_balance -= total_deduction
     logger.info(f"Simulated LONG for {symbol}: Price {current_price:.8f}, Quantity {quantity:.8f}, Amount {amount_usdt:.2f}, Fee {fee:.4f}, Total Deduction {total_deduction:.4f}, New Balance {virtual_balance:.2f}")
-    return current_price, quantity, amount_usdt
+    return current_price, quantity, amount_usdt, fee
 
 def simulate_open_short(symbol, amount_usdt=15.0):
     global virtual_balance
     current_price = get_current_price(symbol)
     if current_price is None:
         logger.error(f"Cannot simulate SHORT for {symbol}: No price data")
-        return None, None, None
+        return None, None, None, None
     if virtual_balance < amount_usdt:
         logger.error(f"Insufficient virtual balance for SHORT on {symbol}: {virtual_balance} < {amount_usdt}")
-        return None, None, None
+        return None, None, None, None
     quantity = amount_usdt / current_price
     fee = amount_usdt * (TRADE_FEE_PERCENT / 100)  # 0.05% fee
     total_deduction = amount_usdt + fee
     virtual_balance -= total_deduction
     logger.info(f"Simulated SHORT for {symbol}: Price {current_price:.8f}, Quantity {quantity:.8f}, Amount {amount_usdt:.2f}, Fee {fee:.4f}, Total Deduction {total_deduction:.4f}, New Balance {virtual_balance:.2f}")
-    return current_price, quantity, amount_usdt
+    return current_price, quantity, amount_usdt, fee
 
-def simulate_close_long(symbol, entry_price, quantity, amount_usdt):
+def simulate_close_long(symbol, entry_price, quantity, amount_usdt, entry_fee):
     global virtual_balance
     current_price = get_current_price(symbol)
     if current_price is None:
@@ -151,6 +151,7 @@ def simulate_close_long(symbol, entry_price, quantity, amount_usdt):
     profit_percentage = ((current_price - entry_price) / entry_price) * 100
     proceeds = quantity * current_price
     fee = proceeds * (TRADE_FEE_PERCENT / 100)  # 0.05% fee
+    net_profit = ((current_price - entry_price) * quantity) - (entry_fee + fee)
     net_proceeds = proceeds - fee
     balance_before = virtual_balance
     virtual_balance += net_proceeds
@@ -162,16 +163,18 @@ def simulate_close_long(symbol, entry_price, quantity, amount_usdt):
         'quantity': quantity,
         'profit_percentage': profit_percentage,
         'proceeds': proceeds,
-        'fee': fee,
+        'entry_fee': entry_fee,
+        'exit_fee': fee,
+        'net_profit': net_profit,
         'net_proceeds': net_proceeds,
         'balance_before': balance_before,
         'balance_after': virtual_balance,
         'timestamp': datetime.now()
     })
-    logger.info(f"Simulated CLOSE LONG for {symbol}: Entry Price {entry_price:.8f}, Exit Price {current_price:.8f}, Quantity {quantity:.8f}, Proceeds {proceeds:.2f}, Fee {fee:.4f}, Net Proceeds {net_proceeds:.4f}, Profit {profit_percentage:.2f}%, Balance Before {balance_before:.2f}, Balance After {virtual_balance:.2f}")
+    logger.info(f"Simulated CLOSE LONG for {symbol}: Entry Price {entry_price:.8f}, Exit Price {current_price:.8f}, Quantity {quantity:.8f}, Proceeds {proceeds:.2f}, Entry Fee {entry_fee:.4f}, Exit Fee {fee:.4f}, Net Profit {net_profit:.4f}, Net Proceeds {net_proceeds:.4f}, Profit {profit_percentage:.2f}%, Balance Before {balance_before:.2f}, Balance After {virtual_balance:.2f}")
     return current_price
 
-def simulate_close_short(symbol, entry_price, quantity, amount_usdt):
+def simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry_fee):
     global virtual_balance
     current_price = get_current_price(symbol)
     if current_price is None:
@@ -180,6 +183,7 @@ def simulate_close_short(symbol, entry_price, quantity, amount_usdt):
     profit_percentage = ((entry_price - current_price) / entry_price) * 100
     proceeds = quantity * (entry_price - current_price + current_price)  # Adjust for short position
     fee = proceeds * (TRADE_FEE_PERCENT / 100)  # 0.05% fee
+    net_profit = ((entry_price - current_price) * quantity) - (entry_fee + fee)
     net_proceeds = proceeds - fee
     balance_before = virtual_balance
     virtual_balance += net_proceeds
@@ -191,13 +195,15 @@ def simulate_close_short(symbol, entry_price, quantity, amount_usdt):
         'quantity': quantity,
         'profit_percentage': profit_percentage,
         'proceeds': proceeds,
-        'fee': fee,
+        'entry_fee': entry_fee,
+        'exit_fee': fee,
+        'net_profit': net_profit,
         'net_proceeds': net_proceeds,
         'balance_before': balance_before,
         'balance_after': virtual_balance,
         'timestamp': datetime.now()
     })
-    logger.info(f"Simulated CLOSE SHORT for {symbol}: Entry Price {entry_price:.8f}, Exit Price {current_price:.8f}, Quantity {quantity:.8f}, Proceeds {proceeds:.2f}, Fee {fee:.4f}, Net Proceeds {net_proceeds:.4f}, Profit {profit_percentage:.2f}%, Balance Before {balance_before:.2f}, Balance After {virtual_balance:.2f}")
+    logger.info(f"Simulated CLOSE SHORT for {symbol}: Entry Price {entry_price:.8f}, Exit Price {current_price:.8f}, Quantity {quantity:.8f}, Proceeds {proceeds:.2f}, Entry Fee {entry_fee:.4f}, Exit Fee {fee:.4f}, Net Profit {net_profit:.4f}, Net Proceeds {net_proceeds:.4f}, Profit {profit_percentage:.2f}%, Balance Before {balance_before:.2f}, Balance After {virtual_balance:.2f}")
     return current_price
 
 # Binance Data Functions
@@ -452,23 +458,27 @@ async def check_alerts(bot: Bot):
             
             # Handle BUY signal (close SHORT if exists and open LONG)
             if cross_over:
+                unrealized_pnl = calculate_unrealized_pnl()
                 if symbol in active_positions and active_positions[symbol]['type'] == 'short':
                     # Close existing short position
                     position = active_positions[symbol]
                     entry_price = position['entry_price']
                     quantity = position['quantity']
                     amount_usdt = position['amount_usdt']
-                    exit_price = simulate_close_short(symbol, entry_price, quantity, amount_usdt)
+                    entry_fee = position['entry_fee']
+                    exit_price = simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry_fee)
                     if exit_price is None:
                         logger.error(f"Failed to simulate CLOSE SHORT for {symbol}")
                         failed_symbols.add(symbol)
                         continue
+                    net_profit = ((entry_price - exit_price) * quantity) - (entry_fee + (quantity * (entry_price - exit_price + exit_price) * (TRADE_FEE_PERCENT / 100)))
                     message = (f"Simulated CLOSE SHORT for #{symbol} at {exit_price:.8f}\n"
                               f"Entry Price: {entry_price:.8f}\n"
                               f"Quantity: {quantity:.8f}, Proceeds: {(quantity * (entry_price - exit_price + exit_price)):.2f} USDT\n"
-                              f"Fee: {(quantity * (entry_price - exit_price + exit_price)) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
-                              f"Profit: {((entry_price - exit_price) / entry_price) * 100:.2f}%\n"
+                              f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * (entry_price - exit_price + exit_price)) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                              f"Net Profit: {net_profit:.4f} USDT\n"
                               f"Reason: Buy signal (cross over trendline)\n"
+                              f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
                               f"Virtual Balance: {virtual_balance:.2f} USDT")
                     title = f'Short Position Closed - Buy Signal {symbol}'
                     image_buffer = plot_candles(historical_data_8h, symbol, title)
@@ -478,7 +488,7 @@ async def check_alerts(bot: Bot):
                     del active_positions[symbol]
                 
                 # Open new long position
-                entry_price, quantity, amount_usdt = simulate_open_long(symbol)
+                entry_price, quantity, amount_usdt, entry_fee = simulate_open_long(symbol)
                 if entry_price is None:
                     logger.error(f"Failed to simulate LONG for {symbol}")
                     failed_symbols.add(symbol)
@@ -487,11 +497,13 @@ async def check_alerts(bot: Bot):
                     'type': 'long',
                     'entry_price': entry_price,
                     'quantity': quantity,
-                    'amount_usdt': amount_usdt
+                    'amount_usdt': amount_usdt,
+                    'entry_fee': entry_fee
                 }
                 message = (f"Simulated LONG for #{symbol} at {entry_price:.8f}\n"
                           f"Quantity: {quantity:.8f}, Amount: {amount_usdt:.2f} USDT\n"
-                          f"Fee: {amount_usdt * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                          f"Fee: {entry_fee:.4f} USDT\n"
+                          f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
                           f"Virtual Balance: {virtual_balance:.2f} USDT")
                 title = f'Long Position Opened - Cross Over Trendline {symbol}'
                 image_buffer = plot_candles(historical_data_8h, symbol, title)
@@ -520,16 +532,18 @@ async def check_alerts(bot: Bot):
                     entry_price = position['entry_price']
                     quantity = position['quantity']
                     amount_usdt = position['amount_usdt']
-                    exit_price = simulate_close_long(symbol, entry_price, quantity, amount_usdt)
+                    entry_fee = position['entry_fee']
+                    exit_price = simulate_close_long(symbol, entry_price, quantity, amount_usdt, entry_fee)
                     if exit_price is None:
                         logger.error(f"Failed to simulate CLOSE LONG for {symbol}")
                         failed_symbols.add(symbol)
                         continue
+                    net_profit = ((exit_price - entry_price) * quantity) - (entry_fee + (quantity * exit_price * (TRADE_FEE_PERCENT / 100)))
                     message = (f"Simulated CLOSE LONG for #{symbol} at {exit_price:.8f}\n"
                               f"Entry Price: {entry_price:.8f}\n"
                               f"Quantity: {quantity:.8f}, Proceeds: {quantity * exit_price:.2f} USDT\n"
-                              f"Fee: {(quantity * exit_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
-                              f"Profit: {((exit_price - entry_price) / entry_price) * 100:.2f}%\n"
+                              f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * exit_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                              f"Net Profit: {net_profit:.4f} USDT\n"
                               f"Reason: Sell signal (cross under trendline)\n"
                               f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
                               f"Virtual Balance: {virtual_balance:.2f} USDT")
@@ -541,7 +555,7 @@ async def check_alerts(bot: Bot):
                     del active_positions[symbol]
                 
                 # Open new short position
-                entry_price, quantity, amount_usdt = simulate_open_short(symbol)
+                entry_price, quantity, amount_usdt, entry_fee = simulate_open_short(symbol)
                 if entry_price is None:
                     logger.error(f"Failed to simulate SHORT for {symbol}")
                     failed_symbols.add(symbol)
@@ -550,11 +564,12 @@ async def check_alerts(bot: Bot):
                     'type': 'short',
                     'entry_price': entry_price,
                     'quantity': quantity,
-                    'amount_usdt': amount_usdt
+                    'amount_usdt': amount_usdt,
+                    'entry_fee': entry_fee
                 }
                 message = (f"Simulated SHORT for #{symbol} at {entry_price:.8f}\n"
                           f"Quantity: {quantity:.8f}, Amount: {amount_usdt:.2f} USDT\n"
-                          f"Fee: {amount_usdt * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                          f"Fee: {entry_fee:.4f} USDT\n"
                           f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
                           f"Virtual Balance: {virtual_balance:.2f} USDT")
                 title = f'Short Position Opened - Cross Under Trendline {symbol}'
@@ -581,6 +596,7 @@ async def check_alerts(bot: Bot):
                 entry_price = position['entry_price']
                 quantity = position['quantity']
                 amount_usdt = position['amount_usdt']
+                entry_fee = position['entry_fee']
                 current_price = get_current_price(symbol)
                 if current_price is None:
                     logger.error(f"Failed to get price for {symbol}")
@@ -603,42 +619,44 @@ async def check_alerts(bot: Bot):
                 if close_trigger:
                     unrealized_pnl = calculate_unrealized_pnl()
                     if position['type'] == 'long':
-                        exit_price = simulate_close_long(symbol, entry_price, quantity, amount_usdt)
+                        exit_price = simulate_close_long(symbol, entry_price, quantity, amount_usdt, entry_fee)
                         if exit_price is None:
                             logger.error(f"Failed to simulate CLOSE LONG for {symbol}")
                             failed_symbols.add(symbol)
                             continue
+                        net_profit = ((exit_price - entry_price) * quantity) - (entry_fee + (quantity * exit_price * (TRADE_FEE_PERCENT / 100)))
                         message = (f"Simulated CLOSE LONG for #{symbol} at {exit_price:.8f}\n"
                                   f"Entry Price: {entry_price:.8f}\n"
                                   f"Quantity: {quantity:.8f}, Proceeds: {quantity * exit_price:.2f} USDT\n"
-                                  f"Fee: {(quantity * exit_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
-                                  f"Profit: {profit_percentage:.2f}%\n"
+                                  f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * exit_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                                  f"Net Profit: {net_profit:.4f} USDT\n"
                                   f"Reason: {close_reason}\n"
                                   f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
                                   f"Virtual Balance: {virtual_balance:.2f} USDT")
                         title = f'Long Position Closed - {close_reason} {symbol}'
                     else:  # short
-                        exit_price = simulate_close_short(symbol, entry_price, quantity, amount_usdt)
+                        exit_price = simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry_fee)
                         if exit_price is None:
                             logger.error(f"Failed to simulate CLOSE SHORT for {symbol}")
                             failed_symbols.add(symbol)
                             continue
+                        net_profit = ((entry_price - exit_price) * quantity) - (entry_fee + (quantity * (entry_price - exit_price + exit_price) * (TRADE_FEE_PERCENT / 100)))
                         message = (f"Simulated CLOSE SHORT for #{symbol} at {exit_price:.8f}\n"
                                   f"Entry Price: {entry_price:.8f}\n"
                                   f"Quantity: {quantity:.8f}, Proceeds: {(quantity * (entry_price - exit_price + exit_price)):.2f} USDT\n"
-                                  f"Fee: {(quantity * (entry_price - exit_price + exit_price)) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
-                                  f"Profit: {profit_percentage:.2f}%\n"
+                                  f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * (entry_price - exit_price + exit_price)) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                                  f"Net Profit: {net_profit:.4f} USDT\n"
                                   f"Reason: {close_reason}\n"
                                   f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
                                   f"Virtual Balance: {virtual_balance:.2f} USDT")
                         title = f'Short Position Closed - {close_reason} {symbol}'
                     
                     total_trades = len(trade_history)
-                    overall_profit_loss = sum(trade['profit_percentage'] for trade in trade_history)
+                    overall_profit_loss = sum(trade['net_profit'] for trade in trade_history)
                     open_trades = len(active_positions)
                     del active_positions[symbol]
                     message += (f"\nTotal Completed Trades: {total_trades}\n"
-                               f"Overall Profit/Loss: {overall_profit_loss:.2f}%\n"
+                               f"Overall Net Profit: {overall_profit_loss:.4f} USDT\n"
                                f"Current Open Trades: {open_trades}")
                     image_buffer = plot_candles(historical_data_8h, symbol, title)
                     if image_buffer:

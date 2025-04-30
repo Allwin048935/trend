@@ -1,11 +1,23 @@
 import requests
 import ccxt
 import pandas as pd
-import ta
+import matplotlib.pyplot as plt
+import mplfinance as mpf
+from io import BytesIO
+import asyncio
+import nest_asyncio
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CallbackQueryHandler, ContextTypes
+import config  # Import the config module
+import ta  # Import ta library
 import logging
 from datetime import datetime, timedelta
 import time
-import config  # Import the config module
+import hmac
+import hashlib
+from urllib.parse import urlencode
+import json
+import telegram.error
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -26,10 +38,18 @@ logger.addHandler(console_handler)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
-# Time interval and trading parameters
-CHECK_INTERVAL = '15m'  # For price cross check
-DAILY_INTERVAL = '1d'  # For daily candle data
-TRADE_FEE_PERCENT = 0.05  # 0.05% fee for futures
+# Time interval and trendline parameters
+interval = '5m'  # For trendline calculation
+CHECK_INTERVAL = '5m'  # For price cross check
+PRIMARY_TRENDLINE_LENGTH = 30
+SECONDARY_TRENDLINE_LENGTH = 20
+INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
+MAX_STORED_TRENDLINES = 9  # Maximum total stored trendlines per type
+
+# Pionex API setup
+BASE_URL = "https://api.pionex.com"
+PIONEX_API_KEY = config.PIONEX_API_KEY
+PIONEX_SECRET_KEY = config.PIONEX_SECRET_KEY
 
 # Binance client
 binance = ccxt.binance({
@@ -39,364 +59,606 @@ binance = ccxt.binance({
     'options': {'defaultType': 'future'}
 })
 
-# Store active positions, last alert times, virtual balance, and trade history
-active_positions = {}  # Format: {symbol: {'type': 'long'/'short', 'entry_price': float, 'quantity': float, 'amount_usdt': float, 'entry_fee': float}}
+# Store trendlines, active orders, and last alert times
+stored_trendlines = {}  # Format: {symbol: {'price': {'lines': [...], 'stored_time': datetime}, 'rsi': {...}}}
+active_orders = {}
 last_alert_times = {}  # Track last alert time per symbol
-virtual_balance = 1000.0  # Starting virtual balance in USD
-trade_history = []  # Store trade details for tracking
 
-# Fetch SELECTED_SYMBOLS dynamically from Binance Futures
-def fetch_binance_symbols():
-    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+# Pionex API Functions
+def generate_signature(method, path, params, body=None):
+    timestamp = str(int(time.time() * 1000))
+    query_params = params.copy()
+    query_params['timestamp'] = timestamp
+    sorted_params = urlencode(sorted(query_params.items()), quote_via=lambda x, *_: x)
+    path_url = f"{path}?{sorted_params}"
+    string_to_sign = f"{method.upper()}{path_url}"
+    if body:
+        body_str = json.dumps(body, separators=(',', ':'))
+        string_to_sign += body_str
+    signature = hmac.new(
+        PIONEX_SECRET_KEY.encode('utf-8'),
+        string_to_sign.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    return signature, timestamp
+
+def api_request(method, endpoint, params=None, body=None):
+    if params is None:
+        params = {}
+    signature, timestamp = generate_signature(method, endpoint, params, body)
+    params['timestamp'] = timestamp
+    url = f"{BASE_URL}{endpoint}"
+    headers = {
+        "PIONEX-KEY": PIONEX_API_KEY,
+        "PIONEX-SIGNATURE": signature,
+        "Content-Type": "application/json"
+    }
     try:
-        response = requests.get(url)
+        if method == "GET":
+            response = requests.get(url, headers=headers, params=params)
+        elif method == "POST":
+            response = requests.post(url, headers=headers, params=params, data=json.dumps(body, separators=(',', ':')))
+        elif method == "DELETE":
+            response = requests.delete(url, headers=headers, params=params, data=json.dumps(body, separators=(',', ':')))
         response.raise_for_status()
-        data = response.json()
-        symbols = [
-            s['symbol'] for s in data['symbols']
-            if s['quoteAsset'] == 'USDT' and s['status'] == 'TRADING' and s['contractType'] == 'PERPETUAL'
-        ]
-        logger.info(f"Fetched {len(symbols)} active USDT perpetual futures symbols from Binance")
-        return symbols
+        return response.json()
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching futures symbols from Binance: {e}")
+        logger.error(f"API request failed for {endpoint}: {e}")
+        return None
+
+def fetch_pionex_symbols():
+    endpoint = "/api/v1/common/symbols"
+    params = {}
+    data = api_request("GET", endpoint, params)
+    if data and 'data' in data and 'symbols' in data['data']:
+        symbols = [s['symbol'].replace("_USDT", "USDT") for s in data['data']['symbols'] 
+                   if s['quoteCurrency'] == 'USDT' and s['enable']]
+        return symbols
+    logger.error("Failed to fetch symbols from Pionex - check API key or network")
+    return []
+
+def fetch_binance_symbols():
+    try:
+        markets = binance.load_markets()
+        symbols = [symbol.replace('/', '') for symbol in markets.keys() if symbol.endswith('/USDT') and markets[symbol]['active']]
+        return symbols
+    except Exception as e:
+        logger.error(f"Failed to fetch Binance symbols: {e}")
         return []
 
-SELECTED_SYMBOLS = fetch_binance_symbols()
+pionex_symbols = set(fetch_pionex_symbols())
+binance_symbols = set(fetch_binance_symbols())
+SELECTED_SYMBOLS = list(pionex_symbols.intersection(binance_symbols))
 
-# Helper Functions for Virtual Trading
-def get_current_price(symbol, retries=3, delay=2):
-    symbol_with_slash = symbol.replace("USDT", "/USDT")
-    for attempt in range(retries):
-        try:
-            ticker = binance.fetch_ticker(symbol_with_slash)
-            current_price = ticker['last']
-            if current_price is None:
-                raise ValueError("Last price is None")
-            return current_price
-        except Exception as e:
-            logger.warning(f"Failed to fetch price for {symbol} on attempt {attempt + 1}/{retries}: {e}")
-            if attempt < retries - 1:
-                time.sleep(delay)
-            else:
-                logger.error(f"Exhausted retries for {symbol}: No price data")
-                return None
+# Pionex API Helper Functions
+def get_symbol_info(symbol):
+    endpoint = "/api/v1/common/symbols"
+    pionex_symbol = symbol.replace("USDT", "_USDT")
+    params = {"symbols": pionex_symbol}
+    data = api_request("GET", endpoint, params)
+    if data and 'data' in data and 'symbols' in data['data'] and data['data']['symbols']:
+        return data['data']['symbols'][0]
+    logger.error(f"Failed to fetch symbol info for {pionex_symbol}")
+    return None
 
-def calculate_unrealized_pnl():
-    total_unrealized_pnl = 0.0
-    for symbol, position in active_positions.items():
-        current_price = get_current_price(symbol)
-        if current_price is None:
-            logger.warning(f"Cannot calculate unrealized PNL for {symbol}: No price data")
-            continue
-        entry_price = position['entry_price']
-        if position['type'] == 'long':
-            unrealized_pnl = ((current_price - entry_price) / entry_price) * 100
-        else:  # short
-            unrealized_pnl = ((entry_price - current_price) / entry_price) * 100
-        total_unrealized_pnl += unrealized_pnl
-    return total_unrealized_pnl
+def get_account_balance(symbol):
+    endpoint = "/api/v1/account/balances"
+    params = {}
+    data = api_request("GET", endpoint, params)
+    if data and 'data' in data and 'balances' in data['data']:
+        base_currency = symbol.replace("USDT", "")
+        for balance in data['data']['balances']:
+            if balance['coin'] == base_currency:
+                return float(balance['free'])
+    logger.error(f"Failed to fetch balance for {symbol}")
+    return 0.0
 
-def simulate_open_long(symbol, amount_usdt=15.0):
-    global virtual_balance
-    current_price = get_current_price(symbol)
-    if current_price is None:
-        logger.error(f"Cannot simulate LONG for {symbol}: No price data")
-        return None, None, None, None
-    if virtual_balance < amount_usdt:
-        logger.error(f"Insufficient virtual balance for LONG on {symbol}: {virtual_balance} < {amount_usdt}")
-        return None, None, None, None
-    quantity = amount_usdt / current_price
-    fee = amount_usdt * (TRADE_FEE_PERCENT / 100)
-    total_deduction = amount_usdt + fee
-    virtual_balance -= total_deduction
-    logger.info(f"Simulated LONG for {symbol}: Price {current_price:.8f}, Quantity {quantity:.8f}, Amount {amount_usdt:.2f}, Fee {fee:.4f}, Total Deduction {total_deduction:.4f}, New Balance {virtual_balance:.2f}")
-    return current_price, quantity, amount_usdt, fee
+def place_market_order(symbol, side, amount_usdt=13.0, quantity=None):
+    endpoint = "/api/v1/trade/order"
+    params = {}
+    symbol_info = get_symbol_info(symbol)
+    if not symbol_info:
+        return None, None
+    pionex_symbol = symbol.replace("USDT", "_USDT")
+    best_bid, best_ask = get_current_price(symbol)
+    if not best_bid or not best_ask:
+        return None, None
+    quote_precision = int(symbol_info['quotePrecision'])
+    base_precision = int(symbol_info['basePrecision'])
+    min_amount = float(symbol_info['minAmount'])
+    amount_usdt = max(amount_usdt, min_amount)
+    body = {
+        "symbol": pionex_symbol,
+        "side": side.upper(),
+        "type": "MARKET",
+    }
+    if side.upper() == "BUY":
+        body["amount"] = f"{amount_usdt:.{quote_precision}f}"
+        buy_quantity = amount_usdt / best_bid
+        buy_quantity = f"{buy_quantity:.{base_precision}f}"
+    else:
+        if quantity is None:
+            quantity = amount_usdt / best_bid
+        body["size"] = f"{quantity:.{base_precision}f}"
+        buy_quantity = None
 
-def simulate_open_short(symbol, amount_usdt=15.0):
-    global virtual_balance
-    current_price = get_current_price(symbol)
-    if current_price is None:
-        logger.error(f"Cannot simulate SHORT for {symbol}: No price data")
-        return None, None, None, None
-    if virtual_balance < amount_usdt:
-        logger.error(f"Insufficient virtual balance for SHORT on {symbol}: {virtual_balance} < {amount_usdt}")
-        return None, None, None, None
-    quantity = amount_usdt / current_price
-    fee = amount_usdt * (TRADE_FEE_PERCENT / 100)
-    total_deduction = amount_usdt + fee
-    virtual_balance -= total_deduction
-    logger.info(f"Simulated SHORT for {symbol}: Price {current_price:.8f}, Quantity {quantity:.8f}, Amount {amount_usdt:.2f}, Fee {fee:.4f}, Total Deduction {total_deduction:.4f}, New Balance {virtual_balance:.2f}")
-    return current_price, quantity, amount_usdt, fee
+    response = api_request("POST", endpoint, params, body)
+    if response and 'data' in response and response['result']:
+        return response['data']['orderId'], buy_quantity if side.upper() == "BUY" else None
+    logger.error(f"Market {side} order failed for {pionex_symbol}: {response}")
+    return None, None
 
-def simulate_close_long(symbol, entry_price, quantity, amount_usdt, entry_fee):
-    global virtual_balance
-    current_price = get_current_price(symbol)
-    if current_price is None:
-        logger.error(f"Cannot simulate CLOSE LONG for {symbol}: No price data")
+def place_limit_order(symbol, side, quantity, price):
+    endpoint = "/api/v1/trade/order"
+    params = {}
+    symbol_info = get_symbol_info(symbol)
+    if not symbol_info:
         return None
-    profit_percentage = ((current_price - entry_price) / entry_price) * 100
-    proceeds = quantity * current_price
-    fee = proceeds * (TRADE_FEE_PERCENT / 100)
-    net_profit = ((current_price - entry_price) * quantity) - (entry_fee + fee)
-    net_proceeds = proceeds - fee
-    balance_before = virtual_balance
-    virtual_balance += net_proceeds
-    trade_history.append({
-        'symbol': symbol,
-        'type': 'long',
-        'entry_price': entry_price,
-        'exit_price': current_price,
-        'quantity': quantity,
-        'profit_percentage': profit_percentage,
-        'proceeds': proceeds,
-        'entry_fee': entry_fee,
-        'exit_fee': fee,
-        'net_profit': net_profit,
-        'net_proceeds': net_proceeds,
-        'balance_before': balance_before,
-        'balance_after': virtual_balance,
-        'timestamp': datetime.now()
-    })
-    logger.info(f"Simulated CLOSE LONG for {symbol}: Entry Price {entry_price:.8f}, Exit Price {current_price:.8f}, Quantity {quantity:.8f}, Proceeds {proceeds:.2f}, Entry Fee {entry_fee:.4f}, Exit Fee {fee:.4f}, Net Profit {net_profit:.4f}, Net Proceeds {net_proceeds:.4f}, Profit {profit_percentage:.2f}%, Balance Before {balance_before:.2f}, Balance After {virtual_balance:.2f}")
-    return current_price
+    pionex_symbol = symbol.replace("USDT", "_USDT")
+    quote_precision = int(symbol_info['quotePrecision'])
+    base_precision = int(symbol_info['basePrecision'])
+    price = float(f"{price:.{quote_precision}f}")
+    body = {
+        "symbol": pionex_symbol,
+        "side": side.upper(),
+        "type": "LIMIT",
+        "size": f"{quantity:.{base_precision}f}",
+        "price": f"{price:.{quote_precision}f}",
+        "IOC": False
+    }
+    response = api_request("POST", endpoint, params, body)
+    if response and 'data' in response and response['result']:
+        return response['data']['orderId']
+    logger.error(f"Limit {side} order failed for {pionex_symbol}: {response}")
+    return None
 
-def simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry_fee):
-    global virtual_balance
-    current_price = get_current_price(symbol)
-    if current_price is None:
-        logger.error(f"Cannot simulate CLOSE SHORT for {symbol}: No price data")
-        return None
-    profit_percentage = ((entry_price - current_price) / entry_price) * 100
-    proceeds = quantity * (entry_price - current_price + current_price)
-    fee = proceeds * (TRADE_FEE_PERCENT / 100)
-    net_profit = ((entry_price - current_price) * quantity) - (entry_fee + fee)
-    net_proceeds = proceeds - fee
-    balance_before = virtual_balance
-    virtual_balance += net_proceeds
-    trade_history.append({
-        'symbol': symbol,
-        'type': 'short',
-        'entry_price': entry_price,
-        'exit_price': current_price,
-        'quantity': quantity,
-        'profit_percentage': profit_percentage,
-        'proceeds': proceeds,
-        'entry_fee': entry_fee,
-        'exit_fee': fee,
-        'net_profit': net_profit,
-        'net_proceeds': net_proceeds,
-        'balance_before': balance_before,
-        'balance_after': virtual_balance,
-        'timestamp': datetime.now()
-    })
-    logger.info(f"Simulated CLOSE SHORT for {symbol}: Entry Price {entry_price:.8f}, Exit Price {current_price:.8f}, Quantity {quantity:.8f}, Proceeds {proceeds:.2f}, Entry Fee {entry_fee:.4f}, Exit Fee {fee:.4f}, Net Profit {net_profit:.4f}, Net Proceeds {net_proceeds:.4f}, Profit {profit_percentage:.2f}%, Balance Before {balance_before:.2f}, Balance After {virtual_balance:.2f}")
-    return current_price
+def cancel_order(symbol, order_id):
+    endpoint = "/api/v1/trade/order"
+    pionex_symbol = symbol.replace("USDT", "_USDT")
+    params = {}
+    body = {
+        "symbol": pionex_symbol,
+        "orderId": order_id
+    }
+    response = api_request("DELETE", endpoint, params, body)
+    if response and 'result' in response and response['result']:
+        return True
+    logger.error(f"Cancel order failed for {pionex_symbol} order {order_id}: {response}")
+    return False
+
+def get_current_price(symbol):
+    endpoint = "/api/v1/market/depth"
+    pionex_symbol = symbol.replace("USDT", "_USDT")
+    params = {"symbol": pionex_symbol}
+    data = api_request("GET", endpoint, params)
+    if data and 'data' in data and 'bids' in data['data'] and 'asks' in data['data']:
+        best_bid = float(data['data']['bids'][0][0])
+        best_ask = float(data['data']['asks'][0][0])
+        return best_bid, best_ask
+    logger.error(f"Failed to fetch price for {pionex_symbol}")
+    return None, None
 
 # Binance Data Functions
 def get_historical_data(symbol, interval, limit=150):
     try:
-        symbol_with_slash = symbol.replace("USDT", "/USDT")
-        ohlcv = binance.fetch_ohlcv(symbol_with_slash, interval, limit=limit)
+        ohlcv = binance.fetch_ohlcv(symbol, interval, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
+        # Calculate RSI
+        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
         return df
     except ccxt.ExchangeError as e:
         logger.error(f"Binance fetch error for {symbol}: {e}")
         return pd.DataFrame()
 
-def check_alerts():
+# Trendline Functions
+def find_pivot_points(series, length, left_length):
+    pivots_high = pd.Series(index=series.index, dtype=float)
+    pivots_low = pd.Series(index=series.index, dtype=float)
+    
+    for i in range(left_length, len(series) - left_length):
+        window = series.iloc[i-left_length:i+left_length+1]
+        if not window.isna().any() and series.iloc[i] == window.max():
+            pivots_high.iloc[i] = series.iloc[i]
+        if not window.isna().any() and series.iloc[i] == window.min():
+            pivots_low.iloc[i] = series.iloc[i]
+    
+    return pivots_high, pivots_low
+
+def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITIAL_MAX_TRENDLINES):
+    trendlines = []
+    pivot_points = pivots.dropna()
+    if len(pivot_points) < 2:
+        return trendlines
+    
+    timestamps = df['timestamp']
+    last_timestamp = timestamps.iloc[-1]
+    
+    for i in range(1, len(pivot_points)):
+        idx1 = pivot_points.index[i-1]
+        idx2 = pivot_points.index[i]
+        
+        x1 = timestamps.loc[idx1]
+        x2 = timestamps.loc[idx2]
+        y1 = pivot_points.iloc[i-1]
+        y2 = pivot_points.iloc[i]
+        
+        time_diff = (x2 - x1).total_seconds() / 3600
+        slope = (y2 - y1) / time_diff if time_diff != 0 else 0
+        
+        x_end = last_timestamp + pd.Timedelta(days=extension_days)
+        extension_time = (x_end - x2).total_seconds() / 3600
+        y_end = y2 + slope * extension_time
+        
+        trendlines.append({
+            'x1': x1, 'y1': y1,
+            'x2': x_end, 'y2': y_end,
+            'slope': slope,
+            'timestamp': x2
+        })
+    
+    return trendlines[:initial_max] if len(trendlines) > initial_max else trendlines
+
+def check_price_cross_trendlines(trendlines, df_15m):
+    if len(df_15m) < 3 or not trendlines:
+        return False, False
+    
+    last_close = df_15m['Low'].iloc[-2]
+    prev_close = df_15m['Low'].iloc[-3]
+    last_timestamp = df_15m['timestamp'].iloc[-1]
+    
+    cross_over = False
+    cross_under = False
+    
+    for tl in trendlines:
+        time_from_start = (last_timestamp - tl['x1']).total_seconds() / 3600
+        tl_value = tl['y1'] + tl['slope'] * time_from_start
+        
+        if prev_close <= tl_value and last_close > tl_value:
+            cross_over = True
+        if prev_close >= tl_value and last_close < tl_value:
+            cross_under = True
+    
+    return cross_over, cross_under
+
+def plot_candles(df, symbol, title):
+    if df.empty or len(df) < 5:
+        logger.warning(f"Not enough data to plot candles for {symbol}: {len(df)} rows")
+        return None
+    
+    try:
+        df_plot = df.set_index('timestamp')
+        df_plot = df_plot[['Open', 'High', 'Low', 'Close', 'RSI']].copy()
+        
+        # Define market colors for candlesticks
+        mc = mpf.make_marketcolors(
+            up='#2fc71e', down='#ed2f1a', edge='white', wick='white', volume='in', inherit=True
+        )
+        s = mpf.make_mpf_style(
+            base_mpl_style=['dark_background'], marketcolors=mc, y_on_right=True,
+            facecolor='black', edgecolor='white', figcolor='black', gridcolor='gray', gridstyle='--'
+        )
+        
+        # Calculate trendlines
+        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+        price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+        
+        primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+        primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+        secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+        secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+        
+        rsi_high_pivots, rsi_low_pivots = find_pivot_points(df['RSI'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+        rsi_sec_high_pivots, rsi_sec_low_pivots = find_pivot_points(df['RSI'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+        
+        rsi_primary_high_trendlines = calculate_trendlines(df, rsi_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+        rsi_primary_low_trendlines = calculate_trendlines(df, rsi_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+        rsi_secondary_high_trendlines = calculate_trendlines(df, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+        rsi_secondary_low_trendlines = calculate_trendlines(df, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+        
+        # Prepare additional plots for candlestick panel
+        add_plots = []
+        
+        def trendline_to_series(df, tl):
+            series = pd.Series(index=df['timestamp'], dtype=float)
+            start_idx = df['timestamp'].searchsorted(tl['x1'])
+            end_idx = df['timestamp'].searchsorted(tl['x2'])
+            if end_idx >= len(df):
+                end_idx = len(df) - 1
+            
+            if start_idx < len(df) and end_idx < len(df):
+                time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
+                if time_diff != 0:
+                    slope = (tl['y2'] - tl['y1']) / time_diff
+                    for i in range(start_idx, end_idx + 1):
+                        time_from_start = (df['timestamp'].iloc[i] - tl['x1']).total_seconds() / 3600
+                        series.iloc[i] = tl['y1'] + slope * time_from_start
+            return series
+        
+        # Add stored price trendlines
+        if symbol in stored_trendlines and 'price' in stored_trendlines[symbol]:
+            for tl in stored_trendlines[symbol]['price']['lines']:
+                color = '#cf0a83' if tl['slope'] < 0 else '#027521'
+                trend_series = trendline_to_series(df, tl)
+                add_plots.append(mpf.make_addplot(trend_series, color=color, width=0.5, panel=0))
+        
+        # Add new price trendlines
+        for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
+            color = 'red' if tl['slope'] < 0 else 'green'
+
+            trend_series = trendline_to_series(df, tl)
+            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=0.5, panel=0))
+        
+        # Calculate Fibonacci retracement levels
+        high_price = df['High'].max()
+        low_price = df['Low'].min()
+        price_diff = high_price - low_price
+        fib_levels = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+        fib_prices = [high_price - (level * price_diff) for level in fib_levels]
+        
+        # Add Fibonacci levels as horizontal lines
+        for level, price in zip(fib_levels, fib_prices):
+            fib_series = pd.Series(price, index=df['timestamp'])
+            add_plots.append(
+                mpf.make_addplot(
+                    fib_series,
+                    color='yellow',
+                    linestyle='-.',
+                    width=0.5,
+                    panel=0,
+                    label=f'Fib {level:.3f}'
+                )
+            )
+        
+        # Prepare RSI plot
+        rsi = df_plot['RSI']
+        rsi_plot = [
+            mpf.make_addplot(rsi, color='white', panel=1, ylabel='RSI'),
+            mpf.make_addplot([70] * len(rsi), color='red', linestyle='--', alpha=0.5, panel=1),
+            mpf.make_addplot([30] * len(rsi), color='green', linestyle='--', alpha=0.5, panel=1),
+        ]
+        
+        # Add stored RSI trendlines
+        if symbol in stored_trendlines and 'rsi' in stored_trendlines[symbol]:
+            for tl in stored_trendlines[symbol]['rsi']['lines']:
+                color = '#cf0a83' if tl['slope'] < 0 else '#027521'
+                trend_series = trendline_to_series(df, tl)
+                rsi_plot.append(mpf.make_addplot(trend_series, color=color, width=0.5, panel=1))
+        
+        # Add new RSI trendlines
+        for tl in rsi_primary_high_trendlines + rsi_primary_low_trendlines + rsi_secondary_high_trendlines + rsi_secondary_low_trendlines:
+            color = 'red' if tl['slope'] < 0 else 'green'
+            trend_series = trendline_to_series(df, tl)
+            rsi_plot.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=0.5, panel=1))
+        
+        # Combine plots
+        all_plots = add_plots + rsi_plot
+        
+        # Plot using mplfinance
+        fig, axlist = mpf.plot(
+            df_plot[['Open', 'High', 'Low', 'Close']],
+            type='candle',
+            style=s,
+            figratio=(10, 8),
+            datetime_format='%H:%M',
+            ylabel='Price ($)',
+            addplot=all_plots,
+            panel_ratios=(3, 1),
+            returnfig=True,
+            tight_layout=True
+        )
+        
+        # Customize title
+        axlist[0].set_title(f"{symbol} - {title}", fontsize=25, style='italic', fontfamily='sans-serif', color='white')
+        
+        # Save to buffer
+        buf = BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', facecolor='black')
+        buf.seek(0)
+        plt.close(fig)
+        return buf
+    except Exception as e:
+        logger.error(f"Error plotting chart for {symbol}: {e}")
+        return None
+
+# Telegram Functions
+async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer, close_price):
+    if image_buffer is None:
+        logger.warning(f"No image buffer for {symbol}, skipping message")
+        return
+    
+    try:
+        await bot.send_photo(chat_id=chat_id, photo=image_buffer)
+        keyboard = [[InlineKeyboardButton("BUY", callback_data=f"buy_{symbol}_{close_price}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
+        logger.info(f"Sent alert for {symbol}: {message}")
+    except Exception as e:
+        logger.error(f"Failed to send Telegram message for {symbol}: {e}")
+
+async def handle_telegram_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try:
+        await query.answer()
+    except telegram.error.BadRequest as e:
+        logger.warning(f"Failed to answer callback query: {e}")
+    
+    try:
+        callback_data = query.data.replace('-', '_')
+        parts = callback_data.split('_')
+        if len(parts) != 3:
+            raise ValueError(f"Invalid callback data format: {callback_data}")
+        
+        action = parts[0]
+        symbol = parts[1]
+        close_price = float(parts[2])
+        
+        if action != "buy":
+            raise ValueError(f"Unknown action: {action}")
+        
+        buy_order_id, buy_quantity = place_market_order(symbol, "BUY")
+        if not buy_order_id:
+            await query.edit_message_text(f"Failed to place BUY order for {symbol}")
+            return
+        
+        await asyncio.sleep(5)
+        
+        available_balance = get_account_balance(symbol)
+        
+        best_bid, best_ask = get_current_price(symbol)
+        if not best_bid or not best_ask:
+            await query.edit_message_text(f"Failed to get price for {symbol}")
+            return
+        sell_price = best_ask * 1.01
+        symbol_info = get_symbol_info(symbol)
+        if not symbol_info:
+            await query.edit_message_text(f"Failed to get symbol info for {symbol}")
+            return
+        precision = int(symbol_info['basePrecision'])
+        quote_precision = int(symbol_info['quotePrecision'])
+        sell_quantity = float(buy_quantity) * 0.995
+        sell_quantity = float(f"{sell_quantity:.{precision}f}")
+        sell_price = float(f"{sell_price:.{quote_precision}f}")
+        
+        if available_balance < sell_quantity:
+            await query.edit_message_text(f"Insufficient balance for SELL: {available_balance} < {sell_quantity}")
+            logger.error(f"Insufficient balance for {symbol}: {available_balance} < {sell_quantity}")
+            return
+        
+        sell_order_id = place_limit_order(symbol, "SELL", sell_quantity, sell_price)
+        if not sell_order_id:
+            await query.edit_message_text(f"Failed to place SELL order for {symbol}")
+            logger.error(f"SELL order failed for {symbol} after BUY, not storing in active_orders")
+            return
+        
+        active_orders[symbol] = {
+            'order_id': sell_order_id,
+            'sell_price': sell_price,
+            'side': 'BUY',
+            'quantity': sell_quantity
+        }
+        await query.edit_message_text(f"Position opened with BUY for {symbol} at {best_bid:.2f}\nSELL order placed at {sell_price:.2f}")
+    except Exception as e:
+        logger.error(f"Error in callback handler: {e}")
+        await query.edit_message_text(f"Error processing request: {str(e)}")
+
+async def check_alerts(bot: Bot):
     if not SELECTED_SYMBOLS:
         logger.error("No symbols selected to check - bot cannot proceed without symbols")
         return
-    failed_symbols = set()
+    
     for symbol in SELECTED_SYMBOLS:
-        if symbol in failed_symbols:
-            logger.info(f"Skipping {symbol} due to previous price fetch failures")
-            continue
         try:
+            # Check cooldown
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 900:
+            if last_alert and (current_time - last_alert).total_seconds() < 1 * 3600:  # 2-hour cooldown
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
-            # Fetch daily candle data (latest candle)
-            daily_data = get_historical_data(symbol, DAILY_INTERVAL, limit=2)
-            if daily_data.empty or len(daily_data) < 2:
-                logger.warning(f"No or insufficient daily historical data fetched for {symbol}")
+
+            historical_data_8h = get_historical_data(symbol, interval, limit=250)
+            if historical_data_8h.empty:
+                logger.warning(f"No 8h historical data fetched for {symbol}")
                 continue
-            current_price = get_current_price(symbol)
-            if current_price is None:
-                logger.error(f"Failed to get price for {symbol}")
-                failed_symbols.add(symbol)
+
+            historical_data_15m = get_historical_data(symbol, CHECK_INTERVAL, limit=5)
+            if historical_data_15m.empty or len(historical_data_15m) < 5:
+                logger.warning(f"No or insufficient 15m historical data fetched for {symbol}")
                 continue
-            # Get the latest daily candle's open price
-            daily_open = daily_data['Open'].iloc[-1]
-            unrealized_pnl = calculate_unrealized_pnl()
-            # Handle BUY signal (current price > daily open)
-            if current_price > daily_open:
-                if symbol in active_positions and active_positions[symbol]['type'] == 'short':
-                    # Close existing short position
-                    position = active_positions[symbol]
-                    entry_price = position['entry_price']
-                    quantity = position['quantity']
-                    amount_usdt = position['amount_usdt']
-                    entry_fee = position['entry_fee']
-                    exit_price = simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry_fee)
-                    if exit_price is None:
-                        logger.error(f"Failed to simulate CLOSE SHORT for {symbol}")
-                        failed_symbols.add(symbol)
-                        continue
-                    net_profit = ((entry_price - exit_price) * quantity) - (entry_fee + (quantity * (entry_price - exit_price + exit_price) * (TRADE_FEE_PERCENT / 100)))
-                    message = (f"Simulated CLOSE SHORT for #{symbol} at {exit_price:.8f}\n"
-                              f"Entry Price: {entry_price:.8f}\n"
-                              f"Quantity: {quantity:.8f}, Proceeds: {(quantity * (entry_price - exit_price + exit_price)):.2f} USDT\n"
-                              f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * (entry_price - exit_price + exit_price)) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
-                              f"Net Profit: {net_profit:.4f} USDT\n"
-                              f"Reason: Buy signal (current price > daily open)\n"
-                              f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                              f"Virtual Balance: {virtual_balance:.2f} USDT")
-                    logger.info(message)
-                    del active_positions[symbol]
-                # Open new long position
-                entry_price, quantity, amount_usdt, entry_fee = simulate_open_long(symbol)
-                if entry_price is None:
-                    logger.error(f"Failed to simulate LONG for {symbol}")
-                    failed_symbols.add(symbol)
-                    continue
-                active_positions[symbol] = {
-                    'type': 'long',
-                    'entry_price': entry_price,
-                    'quantity': quantity,
-                    'amount_usdt': amount_usdt,
-                    'entry_fee': entry_fee
-                }
-                message = (f"Simulated LONG for #{symbol} at {entry_price:.8f}\n"
-                          f"Quantity: {quantity:.8f}, Amount: {amount_usdt:.2f} USDT\n"
-                          f"Fee: {entry_fee:.4f} USDT\n"
-                          f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                          f"Virtual Balance: {virtual_balance:.2f} USDT")
-                logger.info(message)
-                last_alert_times[symbol] = current_time
-            # Handle SELL signal (current price < daily open)
-            if current_price < daily_open:
-                if symbol in active_positions and active_positions[symbol]['type'] == 'long':
-                    # Close existing long position
-                    position = active_positions[symbol]
-                    entry_price = position['entry_price']
-                    quantity = position['quantity']
-                    amount_usdt = position['amount_usdt']
-                    entry_fee = position['entry_fee']
-                    exit_price = simulate_close_long(symbol, entry_price, quantity, amount_usdt, entry_fee)
-                    if exit_price is None:
-                        logger.error(f"Failed to simulate CLOSE LONG for {symbol}")
-                        failed_symbols.add(symbol)
-                        continue
-                    net_profit = ((exit_price - entry_price) * quantity) - (entry_fee + (quantity * exit_price * (TRADE_FEE_PERCENT / 100)))
-                    message = (f"Simulated CLOSE LONG for #{symbol} at {exit_price:.8f}\n"
-                              f"Entry Price: {entry_price:.8f}\n"
-                              f"Quantity: {quantity:.8f}, Proceeds: {quantity * exit_price:.2f} USDT\n"
-                              f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * exit_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
-                              f"Net Profit: {net_profit:.4f} USDT\n"
-                              f"Reason: Sell signal (current price < daily open)\n"
-                              f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                              f"Virtual Balance: {virtual_balance:.2f} USDT")
-                    logger.info(message)
-                    del active_positions[symbol]
-                # Open new short position
-                entry_price, quantity, amount_usdt, entry_fee = simulate_open_short(symbol)
-                if entry_price is None:
-                    logger.error(f"Failed to simulate SHORT for {symbol}")
-                    failed_symbols.add(symbol)
-                    continue
-                active_positions[symbol] = {
-                    'type': 'short',
-                    'entry_price': entry_price,
-                    'quantity': quantity,
-                    'amount_usdt': amount_usdt,
-                    'entry_fee': entry_fee
-                }
-                message = (f"Simulated SHORT for #{symbol} at {entry_price:.8f}\n"
-                          f"Quantity: {quantity:.8f}, Amount: {amount_usdt:.2f} USDT\n"
-                          f"Fee: {entry_fee:.4f} USDT\n"
-                          f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                          f"Virtual Balance: {virtual_balance:.2f} USDT")
-                logger.info(message)
-                last_alert_times[symbol] = current_time
-            # Check for profit/stop-loss on open positions
-            if symbol in active_positions:
-                position = active_positions[symbol]
-                entry_price = position['entry_price']
-                quantity = position['quantity']
-                amount_usdt = position['amount_usdt']
-                entry_fee = position['entry_fee']
-                current_price = get_current_price(symbol)
-                if current_price is None:
-                    logger.error(f"Failed to get price for {symbol}")
-                    failed_symbols.add(symbol)
-                    continue
-                if position['type'] == 'long':
-                    profit_percentage = ((current_price - entry_price) / entry_price) * 100
-                else:  # short
-                    profit_percentage = ((entry_price - current_price) / entry_price) * 100
-                close_trigger = False
-                close_reason = ""
-                if profit_percentage >= 10:
-                    close_trigger = True
-                    close_reason = "1% profit target reached"
-                elif profit_percentage <= -5:
-                    close_trigger = True
-                    close_reason = "stop-loss triggered at -1%"
-                if close_trigger:
-                    unrealized_pnl = calculate_unrealized_pnl()
-                    if position['type'] == 'long':
-                        exit_price = simulate_close_long(symbol, entry_price, quantity, amount_usdt, entry_fee)
-                        if exit_price is None:
-                            logger.error(f"Failed to simulate CLOSE LONG for {symbol}")
-                            failed_symbols.add(symbol)
-                            continue
-                        net_profit = ((exit_price - entry_price) * quantity) - (entry_fee + (quantity * exit_price * (TRADE_FEE_PERCENT / 100)))
-                        message = (f"Simulated CLOSE LONG for #{symbol} at {exit_price:.8f}\n"
-                                  f"Entry Price: {entry_price:.8f}\n"
-                                  f"Quantity: {quantity:.8f}, Proceeds: {quantity * exit_price:.2f} USDT\n"
-                                  f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * exit_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
-                                  f"Net Profit: {net_profit:.4f} USDT\n"
-                                  f"Reason: {close_reason}\n"
-                                  f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                                  f"Virtual Balance: {virtual_balance:.2f} USDT")
-                    else:  # short
-                        exit_price = simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry_fee)
-                        if exit_price is None:
-                            logger.error(f"Failed to simulate CLOSE SHORT for {symbol}")
-                            failed_symbols.add(symbol)
-                            continue
-                        net_profit = ((entry_price - exit_price) * quantity) - (entry_fee + (quantity * (entry_price - exit_price + exit_price) * (TRADE_FEE_PERCENT / 100)))
-                        message = (f"Simulated CLOSE SHORT for #{symbol} at {exit_price:.8f}\n"
-                                  f"Entry Price: {entry_price:.8f}\n"
-                                  f"Quantity: {quantity:.8f}, Proceeds: {(quantity * (entry_price - exit_price + exit_price)):.2f} USDT\n"
-                                  f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * (entry_price - exit_price + exit_price)) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
-                                  f"Net Profit: {net_profit:.4f} USDT\n"
-                                  f"Reason: {close_reason}\n"
-                                  f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                                  f"Virtual Balance: {virtual_balance:.2f} USDT")
-                    total_trades = len(trade_history)
-                    overall_profit_loss = sum(trade['net_profit'] for trade in trade_history)
-                    open_trades = len(active_positions)
-                    del active_positions[symbol]
-                    message += (f"\nTotal Completed Trades: {total_trades}\n"
-                               f"Overall Net Profit: {overall_profit_loss:.4f} USDT\n"
-                               f"Current Open Trades: {open_trades}")
-                    logger.info(message)
-                    last_alert_times[symbol] = current_time
+
+            historical_data_8h.name = symbol
+            historical_data_15m.name = symbol
+
+            # Calculate new potential price trendlines
+            price_high_pivots, price_low_pivots = find_pivot_points(historical_data_8h['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+            price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(historical_data_8h['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+            
+            primary_high_trendlines = calculate_trendlines(historical_data_8h, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+            primary_low_trendlines = calculate_trendlines(historical_data_8h, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+            secondary_high_trendlines = calculate_trendlines(historical_data_8h, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+            secondary_low_trendlines = calculate_trendlines(historical_data_8h, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+            
+            # Calculate new potential RSI trendlines
+            rsi_high_pivots, rsi_low_pivots = find_pivot_points(historical_data_8h['RSI'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
+            rsi_sec_high_pivots, rsi_sec_low_pivots = find_pivot_points(historical_data_8h['RSI'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
+            
+            rsi_primary_high_trendlines = calculate_trendlines(historical_data_8h, rsi_high_pivots, PRIMARY_TRENDLINE_LENGTH)
+            rsi_primary_low_trendlines = calculate_trendlines(historical_data_8h, rsi_low_pivots, PRIMARY_TRENDLINE_LENGTH)
+            rsi_secondary_high_trendlines = calculate_trendlines(historical_data_8h, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
+            rsi_secondary_low_trendlines = calculate_trendlines(historical_data_8h, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+            
+            # Combine stored and new price trendlines for checking
+            current_stored = stored_trendlines.get(symbol, {'price': {'lines': [], 'stored_time': None}, 'rsi': {'lines': [], 'stored_time': None}})
+            all_price_trendlines = (current_stored['price']['lines'] + 
+                                   primary_high_trendlines + primary_low_trendlines + 
+                                   secondary_high_trendlines + secondary_low_trendlines)
+
+            cross_over, cross_under = check_price_cross_trendlines(all_price_trendlines, historical_data_15m)
+
+            if cross_over:
+                message = f"Buy #{symbol}"
+                title = f'Price Cross Over Trendline {symbol}'
+                image_buffer = plot_candles(historical_data_8h, symbol, title)
+                if image_buffer:
+                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
+                                              historical_data_15m['Close'].iloc[-1])
+                    last_alert_times[symbol] = current_time  # Update last alert time
+                    # Store new price trendlines
+                    new_price_lines = primary_high_trendlines + primary_low_trendlines
+                    updated_price_lines = current_stored['price']['lines'] + new_price_lines
+                    if len(updated_price_lines) > MAX_STORED_TRENDLINES:
+                        updated_price_lines = sorted(updated_price_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
+                    
+                    # Store new RSI trendlines
+                    new_rsi_lines = rsi_primary_high_trendlines + rsi_primary_low_trendlines
+                    updated_rsi_lines = current_stored['rsi']['lines'] + new_rsi_lines
+                    if len(updated_rsi_lines) > MAX_STORED_TRENDLINES:
+                        updated_rsi_lines = sorted(updated_rsi_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
+                    
+                    stored_trendlines[symbol] = {
+                        'price': {'lines': updated_price_lines, 'stored_time': current_time},
+                        'rsi': {'lines': updated_rsi_lines, 'stored_time': current_time}
+                    }
+                else:
+                    logger.warning(f"Failed to generate chart for {symbol}")
+            
+            if cross_under and symbol in active_orders:
+                message = f"Sell #{symbol}"
+                title = f'Price Cross Under Trendline {symbol}'
+                image_buffer = plot_candles(historical_data_8h, symbol, title)
+                if image_buffer:
+                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
+                                              historical_data_15m['Close'].iloc[-1])
+                    last_alert_times[symbol] = current_time  # Update last alert time
+                
+                order_info = active_orders[symbol]
+                if order_info['side'] == 'BUY':
+                    if cancel_order(symbol, order_info['order_id']):
+                        sell_order_id, _ = place_market_order(symbol, "SELL", quantity=order_info['quantity'])
+                        if sell_order_id:
+                            del active_orders[symbol]
+                            await bot.send_message(chat_id=config.CHAT_ID, 
+                                                 text=f"Position closed with SELL for {symbol} due to price cross under trendline")
+                        else:
+                            logger.error(f"Failed to place market SELL for {symbol}")
+                    else:
+                        logger.error(f"Failed to cancel SELL order for {symbol}")
         except Exception as e:
             logger.error(f"Error checking {symbol}: {e}")
-            failed_symbols.add(symbol)
 
-def main():
+async def run_alert_loop(application: Application):
+    bot = application.bot
     while True:
-        check_alerts()
-        time.sleep(300)
+        await check_alerts(bot)
+        await asyncio.sleep(300)
+
+async def main():
+    application = Application.builder().token(config.TELEGRAM_TOKEN).build()
+    application.add_handler(CallbackQueryHandler(handle_telegram_callback))
+    asyncio.create_task(run_alert_loop(application))
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-    main()
+    nest_asyncio.apply()
+    asyncio.run(main())

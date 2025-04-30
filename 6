@@ -600,7 +600,7 @@ async def check_alerts(bot: Bot):
 
             if cross_over:
                 message = f"Buy #{symbol}"
-                title = f'Price Cross Over Trendline {symbol}'
+                title = f'Buy {symbol}'
                 image_buffer = plot_candles(historical_data_8h, symbol, title)
                 if image_buffer:
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
@@ -627,7 +627,7 @@ async def check_alerts(bot: Bot):
             
             if cross_under and symbol in active_orders:
                 message = f"Sell #{symbol}"
-                title = f'Price Cross Under Trendline {symbol}'
+                title = f'sell {symbol}'
                 image_buffer = plot_candles(historical_data_8h, symbol, title)
                 if image_buffer:
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
@@ -641,7 +641,7 @@ async def check_alerts(bot: Bot):
                         if sell_order_id:
                             del active_orders[symbol]
                             await bot.send_message(chat_id=config.CHAT_ID, 
-                                                 text=f"Position closed with SELL for {symbol} due to price cross under trendline")
+                                                 text=f"Position #closed with SELL for {symbol} due to price cross under trendline")
                         else:
                             logger.error(f"Failed to place market SELL for {symbol}")
                     else:

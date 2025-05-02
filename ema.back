@@ -260,8 +260,13 @@ async def check_alerts(bot: Bot):
             historical_data.name = symbol
             cross_over, cross_under = check_ema_crossover(historical_data)
             
+            # Calculate trade statistics
+            total_trades = len(trade_history)
+            overall_profit_loss = sum(trade['net_profit'] for trade in trade_history)
+            open_trades = len(active_positions)
+            
             # Handle BUY signal (close SHORT if exists and open LONG)
-            if cross_over:
+            if Цcross_over:
                 unrealized_pnl = calculate_unrealized_pnl()
                 if symbol in active_positions and active_positions[symbol]['type'] == 'short':
                     position = active_positions[symbol]
@@ -275,6 +280,8 @@ async def check_alerts(bot: Bot):
                         failed_symbols.add(symbol)
                         continue
                     net_profit = ((entry_price - exit_price) * quantity) - (entry_fee + (quantity * (entry_price - exit_price + exit_price) * (TRADE_FEE_PERCENT / 100)))
+                    total_trades += 1  # Increment for closed trade
+                    open_trades -= 1   # Decrement for closed position
                     message = (f"Simulated CLOSE SHORT for #{symbol} at {exit_price:.8f}\n"
                               f"Entry Price: {entry_price:.8f}\n"
                               f"Quantity: {quantity:.8f}, Proceeds: {(quantity * (entry_price - exit_price + exit_price)):.2f} USDT\n"
@@ -282,7 +289,10 @@ async def check_alerts(bot: Bot):
                               f"Net Profit: {net_profit:.4f} USDT\n"
                               f"Reason: Buy signal (Short EMA crossed over Long EMA)\n"
                               f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                              f"Virtual Balance: {virtual_balance:.2f} USDT")
+                              f"Virtual Balance: {virtual_balance:.2f} USDT\n"
+                              f"Total Completed Trades: {total_trades}\n"
+                              f"Overall Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
+                              f"Current Open Trades: {open_trades}")
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message)
                     last_alert_times[symbol] = current_time
                     del active_positions[symbol]
@@ -299,11 +309,15 @@ async def check_alerts(bot: Bot):
                     'amount_usdt': amount_usdt,
                     'entry_fee': entry_fee
                 }
+                open_trades += 1  # Increment for opened position
                 message = (f"Simulated LONG for #{symbol} at {entry_price:.8f}\n"
                           f"Quantity: {quantity:.8f}, Amount: {amount_usdt:.2f} USDT\n"
                           f"Fee: {entry_fee:.4f} USDT\n"
                           f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                          f"Virtual Balance: {virtual_balance:.2f} USDT")
+                          f"Virtual Balance: {virtual_balance:.2f} USDT\n"
+                          f"Total Completed Trades: {total_trades}\n"
+                          f"Overall Net Profit: {overall_profit_loss:.4f} USDT\n"
+                          f"Current Open Trades: {open_trades}")
                 await send_telegram_message(bot, config.CHAT_ID, symbol, message)
                 last_alert_times[symbol] = current_time
             
@@ -322,6 +336,8 @@ async def check_alerts(bot: Bot):
                         failed_symbols.add(symbol)
                         continue
                     net_profit = ((exit_price - entry_price) * quantity) - (entry_fee + (quantity * exit_price * (TRADE_FEE_PERCENT / 100)))
+                    total_trades += 1  # Increment for closed trade
+                    open_trades -= 1   # Decrement for closed position
                     message = (f"Simulated CLOSE LONG for #{symbol} at {exit_price:.8f}\n"
                               f"Entry Price: {entry_price:.8f}\n"
                               f"Quantity: {quantity:.8f}, Proceeds: {quantity * exit_price:.2f} USDT\n"
@@ -329,7 +345,10 @@ async def check_alerts(bot: Bot):
                               f"Net Profit: {net_profit:.4f} USDT\n"
                               f"Reason: Sell signal (Short EMA crossed under Long EMA)\n"
                               f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                              f"Virtual Balance: {virtual_balance:.2f} USDT")
+                              f"Virtual Balance: {virtual_balance:.2f} USDT\n"
+                              f"Total Completed Trades: {total_trades}\n"
+                              f"Overall Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
+                              f"Current Open Trades: {open_trades}")
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message)
                     last_alert_times[symbol] = current_time
                     del active_positions[symbol]
@@ -346,11 +365,15 @@ async def check_alerts(bot: Bot):
                     'amount_usdt': amount_usdt,
                     'entry_fee': entry_fee
                 }
+                open_trades += 1  # Increment for opened position
                 message = (f"Simulated SHORT for #{symbol} at {entry_price:.8f}\n"
                           f"Quantity: {quantity:.8f}, Amount: {amount_usdt:.2f} USDT\n"
                           f"Fee: {entry_fee:.4f} USDT\n"
                           f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                          f"Virtual Balance: {virtual_balance:.2f} USDT")
+                          f"Virtual Balance: {virtual_balance:.2f} USDT\n"
+                          f"Total Completed Trades: {total_trades}\n"
+                          f"Overall Net Profit: {overall_profit_loss:.4f} USDT\n"
+                          f"Current Open Trades: {open_trades}")
                 await send_telegram_message(bot, config.CHAT_ID, symbol, message)
                 last_alert_times[symbol] = current_time
             
@@ -389,6 +412,8 @@ async def check_alerts(bot: Bot):
                             failed_symbols.add(symbol)
                             continue
                         net_profit = ((exit_price - entry_price) * quantity) - (entry_fee + (quantity * exit_price * (TRADE_FEE_PERCENT / 100)))
+                        total_trades += 1  # Increment for closed trade
+                        open_trades -= 1   # Decrement for closed position
                         message = (f"Simulated CLOSE LONG for #{symbol} at {exit_price:.8f}\n"
                                   f"Entry Price: {entry_price:.8f}\n"
                                   f"Quantity: {quantity:.8f}, Proceeds: {quantity * exit_price:.2f} USDT\n"
@@ -396,7 +421,10 @@ async def check_alerts(bot: Bot):
                                   f"Net Profit: {net_profit:.4f} USDT\n"
                                   f"Reason: {close_reason}\n"
                                   f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                                  f"Virtual Balance: {virtual_balance:.2f} USDT")
+                                  f"Virtual Balance: {virtual_balance:.2f} USDT\n"
+                                  f"Total Completed Trades: {total_trades}\n"
+                                  f"Overall Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
+                                  f"Current Open Trades: {open_trades}")
                     else:  # short
                         exit_price = simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry_fee)
                         if exit_price is None:
@@ -404,6 +432,8 @@ async def check_alerts(bot: Bot):
                             failed_symbols.add(symbol)
                             continue
                         net_profit = ((entry_price - exit_price) * quantity) - (entry_fee + (quantity * (entry_price - exit_price + exit_price) * (TRADE_FEE_PERCENT / 100)))
+                        total_trades += 1  # Increment for closed trade
+                        open_trades -= 1   # Decrement for closed position
                         message = (f"Simulated CLOSE SHORT for #{symbol} at {exit_price:.8f}\n"
                                   f"Entry Price: {entry_price:.8f}\n"
                                   f"Quantity: {quantity:.8f}, Proceeds: {(quantity * (entry_price - exit_price + exit_price)):.2f} USDT\n"
@@ -411,17 +441,14 @@ async def check_alerts(bot: Bot):
                                   f"Net Profit: {net_profit:.4f} USDT\n"
                                   f"Reason: {close_reason}\n"
                                   f"Cumulative Unrealized PNL (all positions): {unrealized_pnl:.2f}%\n"
-                                  f"Virtual Balance: {virtual_balance:.2f} USDT")
+                                  f"Virtual Balance: {virtual_balance:.2f} USDT\n"
+                                  f"Total Completed Trades: {total_trades}\n"
+                                  f"Overall Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
+                                  f"Current Open Trades: {open_trades}")
                     
-                    total_trades = len(trade_history)
-                    overall_profit_loss = sum(trade['net_profit'] for trade in trade_history)
-                    open_trades = len(active_positions)
-                    del active_positions[symbol]
-                    message += (f"\nTotal Completed Trades: {total_trades}\n"
-                               f"Overall Net Profit: {overall_profit_loss:.4f} USDT\n"
-                               f"Current Open Trades: {open_trades}")
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message)
                     last_alert_times[symbol] = current_time
+                    del active_positions[symbol]
         except Exception as e:
             logger.error(f"Error checking {symbol}: {e}")
             failed_symbols.add(symbol)

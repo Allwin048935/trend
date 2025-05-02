@@ -266,7 +266,7 @@ async def check_alerts(bot: Bot):
             open_trades = len(active_positions)
             
             # Handle BUY signal (close SHORT if exists and open LONG)
-            if Цcross_over:
+            if cross_over:
                 unrealized_pnl = calculate_unrealized_pnl()
                 if symbol in active_positions and active_positions[symbol]['type'] == 'short':
                     position = active_positions[symbol]

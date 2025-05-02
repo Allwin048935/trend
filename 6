@@ -40,11 +40,11 @@ logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
 interval = '8h'  # For trendline calculation
-CHECK_INTERVAL = '8h'  # For price cross check
+CHECK_INTERVAL = '15m'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 30
-SECONDARY_TRENDLINE_LENGTH = 20
-INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
-MAX_STORED_TRENDLINES = 9  # Maximum total stored trendlines per type
+SECONDARY_TRENDLINE_LENGTH = 30
+INITIAL_MAX_TRENDLINES = 2  # Initial limit per type
+MAX_STORED_TRENDLINES = 2  # Maximum total stored trendlines per type
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
@@ -304,9 +304,13 @@ def check_price_cross_trendlines(trendlines, df_15m):
     if len(df_15m) < 3 or not trendlines:
         return False, False
     
-    curr_low = df_15m['Low'].iloc[-1]
+    curr_close = df_15m['Close'].iloc[-1]
     last_close = df_15m['Close'].iloc[-2]
     prev_close = df_15m['Close'].iloc[-3]
+    curr_low = df_15m['Low'].iloc[-1]
+    last_low = df_15m['Low'].iloc[-2]
+    prev_low = df_15m['Low'].iloc[-3]
+
 
     last_timestamp = df_15m['timestamp'].iloc[-1]
     
@@ -317,9 +321,9 @@ def check_price_cross_trendlines(trendlines, df_15m):
         time_from_start = (last_timestamp - tl['x1']).total_seconds() / 3600
         tl_value = tl['y1'] + tl['slope'] * time_from_start
         
-        if prev_close <= tl_value and last_close > tl_value:
+        if prev_low <= tl_value and last_low > tl_value:
             cross_over = True
-        if last_close >= tl_value and curr_low < tl_value:
+        if last_low >= tl_value and curr_low < tl_value:
             cross_under = True
     
     return cross_over, cross_under

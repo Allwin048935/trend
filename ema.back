@@ -32,7 +32,7 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trading parameters
-CHECK_INTERVAL = '5m'  # For EMA crossover checks
+CHECK_INTERVAL = '15m'  # For EMA crossover checks
 SHORT_EMA_PERIOD = 9  # Short EMA period
 LONG_EMA_PERIOD = 200  # Long EMA period
 TRADE_FEE_PERCENT = 0.05  # 0.05% fee for futures
@@ -250,7 +250,7 @@ async def check_alerts(bot: Bot):
         try:
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 300:
+            if last_alert and (current_time - last_alert).total_seconds() < 900:
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
             historical_data = get_historical_data(symbol, CHECK_INTERVAL, limit=max(SHORT_EMA_PERIOD, LONG_EMA_PERIOD) + 5)

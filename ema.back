@@ -33,9 +33,9 @@ logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trading parameters
 CHECK_INTERVAL = '15m'  # For EMA crossover checks
-SHORT_EMA_PERIOD = 9  # Short EMA period
-LONG_EMA_PERIOD = 200  # Long EMA period
-TRADE_FEE_PERCENT = 0.05  # 0.05% fee for futures
+SHORT_EMA_PERIOD = 5  # Short EMA period
+LONG_EMA_PERIOD = 100  # Long EMA period
+TRADE_FEE_PERCENT = 0.1  # 0.05% fee for futures
 
 # Binance client
 binance = ccxt.binance({

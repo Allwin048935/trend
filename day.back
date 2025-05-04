@@ -6,7 +6,6 @@ import nest_asyncio
 from telegram import Bot, Update
 from telegram.ext import Application, ContextTypes
 import config  # Import the config module
-import ta  # Import ta library
 import logging
 from datetime import datetime, timedelta
 import time
@@ -206,7 +205,7 @@ def simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry_fee):
 def get_daily_open_price(symbol):
     try:
         symbol_with_slash = symbol.replace("USDT", "/USDT")
-        ohlcv = binance.fetch_ohlcv(symbol_with_slash, DAILY_INTERVAL, limit=1)
+        ohlcv = binance.fetch_ohlcv(symbol_with_slash, DAILY_INTERVAL, limit=2)
         if not ohlcv:
             logger.warning(f"No daily data fetched for {symbol}")
             return None
@@ -216,15 +215,15 @@ def get_daily_open_price(symbol):
         logger.error(f"Binance fetch error for daily data of {symbol}: {e}")
         return None
 
-def get_5m_close_price(symbol):
+def get_5m_close_prices(symbol):
     try:
         symbol_with_slash = symbol.replace("USDT", "/USDT")
-        ohlcv = binance.fetch_ohlcv(symbol_with_slash, CHECK_INTERVAL, limit=1)
-        if not ohlcv:
-            logger.warning(f"No 5m data fetched for {symbol}")
+        ohlcv = binance.fetch_ohlcv(symbol_with_slash, CHECK_INTERVAL, limit=5)  # Fetch last 3 candles
+        if len(ohlcv) < 3:
+            logger.warning(f"Insufficient 5m data fetched for {symbol}: {len(ohlcv)} candles")
             return None
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        return df['close'].iloc[-1]
+        return df['close']
     except ccxt.ExchangeError as e:
         logger.error(f"Binance fetch error for 5m data of {symbol}: {e}")
         return None
@@ -232,12 +231,16 @@ def get_5m_close_price(symbol):
 # Price Comparison Check
 def check_price_condition(symbol):
     daily_open = get_daily_open_price(symbol)
-    current_5m_close = get_5m_close_price(symbol)
-    if daily_open is None or current_5m_close is None:
+    close_prices = get_5m_close_prices(symbol)
+    if daily_open is None or close_prices is None:
         return False, False
-    buy_signal = current_5m_close > daily_open
-    sell_signal = current_5m_close < daily_open
-    return buy_signal, sell_signal
+    try:
+        buy_signal = close_prices.iloc[-2] > daily_open and close_prices.iloc[-3] < daily_open
+        sell_signal = close_prices.iloc[-2] < daily_open and close_prices.iloc[-3] > daily_open
+        return buy_signal, sell_signal
+    except IndexError as e:
+        logger.error(f"Index error for {symbol} when checking price condition: {e}")
+        return False, False
 
 async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str):
     try:
@@ -290,7 +293,7 @@ async def check_alerts(bot: Bot, symbols):
                               f"Quantity: {quantity:.8f}, Proceeds: {(quantity * (entry_price - exit_price + exit_price)):.2f} USDT\n"
                               f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * (entry_price - exit_price + exit_price)) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
                               f"Net Profit: {net_profit:.4f} USDT\n"
-                              f"Reason: Buy signal (5m close > daily open)\n"
+                              f"Reason: Buy signal (5m close[-2] > daily open and 5m close[-3] < daily open)\n"
                               f"Cumulative Unrealized PNL (all positions): {unrealized_pnl_percent:.2f}% ({unrealized_pnl_usdt:.2f} USDT)\n"
                               f"Virtual Balance: {virtual_balance:.2f} USDT\n"
                               f"Total Completed Trades: {total_trades}\n"
@@ -346,7 +349,7 @@ async def check_alerts(bot: Bot, symbols):
                               f"Quantity: {quantity:.8f}, Proceeds: {quantity * exit_price:.2f} USDT\n"
                               f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * exit_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
                               f"Net Profit: {net_profit:.4f} USDT\n"
-                              f"Reason: Sell signal (5m close < daily open)\n"
+                              f"Reason: Sell signal (5m close[-2] < daily open and 5m close[-3] > daily open)\n"
                               f"Cumulative Unrealized PNL (all positions): {unrealized_pnl_percent:.2f}% ({unrealized_pnl_usdt:.2f} USDT)\n"
                               f"Virtual Balance: {virtual_balance:.2f} USDT\n"
                               f"Total Completed Trades: {total_trades}\n"

@@ -270,7 +270,7 @@ def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITI
     trendlines = []
     pivot_points = pivots.dropna()
     if len(pivot_points) < 2:
-       -return trendlines
+        return trendlines
     
     timestamps = df['timestamp']
     last_timestamp = timestamps.iloc[-1]

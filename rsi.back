@@ -253,11 +253,11 @@ def check_rsi_crossover(df):
     if len(df) < 3:
         return False, False
     curr_rsi = df['RSI'].iloc[-1]
-    last_rsi = df['RSI'].iloc[-2]
-    prev_rsi = df['RSI'].iloc[-3]
+    last_rsi = df['RSI'].iloc[-1]
+    prev_rsi = df['RSI'].iloc[-2]
     curr_rsi_ema = df['RSI_EMA'].iloc[-1]
-    last_rsi_ema = df['RSI_EMA'].iloc[-2]
-    prev_rsi_ema = df['RSI_EMA'].iloc[-3]
+    last_rsi_ema = df['RSI_EMA'].iloc[-1]
+    prev_rsi_ema = df['RSI_EMA'].iloc[-2]
     
     cross_over = prev_rsi <= prev_rsi_ema and last_rsi > last_rsi_ema
     cross_under = prev_rsi >= prev_rsi_ema and last_rsi < last_rsi_ema

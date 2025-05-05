@@ -39,12 +39,12 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '15m'  # For trendline calculation
-CHECK_INTERVAL = '15m'  # For RSI cross check
+interval = '5m'  # For trendline calculation
+CHECK_INTERVAL = '5m'  # For RSI cross check
 PRIMARY_TRENDLINE_LENGTH = 30
-SECONDARY_TRENDLINE_LENGTH = 30
-INITIAL_MAX_TRENDLINES = 2  # Initial limit per type
-MAX_STORED_TRENDLINES = 2  # Maximum total stored trendlines per type
+SECONDARY_TRENDLINE_LENGTH = 20
+INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
+MAX_STORED_TRENDLINES = 9  # Maximum total stored trendlines per type
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
@@ -270,7 +270,7 @@ def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITI
     trendlines = []
     pivot_points = pivots.dropna()
     if len(pivot_points) < 2:
-        return trendlines
+       -return trendlines
     
     timestamps = df['timestamp']
     last_timestamp = timestamps.iloc[-1]
@@ -391,14 +391,6 @@ def plot_candles(df, symbol, title):
         
         # Prepare RSI plot
         rsi = df_plot['RSI']
-        rsi_plot = [
-            mpf.make_addplot(rsi, color='white', panel=1, ylabel='RSI'),
-            mpf.make_addplot([70] * len(rsi), color='red', linestyle='--', alpha=0.5, panel=1),
-            mpf.make_addplot([30] * len(rsi), color='green', linestyle='--', alpha=0.5, panel=1),
-        ]
-        
-        # Add stored RSI trendlines
-        if symbol in storedrsi = df_plot['RSI']
         rsi_plot = [
             mpf.make_addplot(rsi, color='white', panel=1, ylabel='RSI'),
             mpf.make_addplot([70] * len(rsi), color='red', linestyle='--', alpha=0.5, panel=1),

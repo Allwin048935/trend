@@ -11,6 +11,8 @@ import logging
 from datetime import datetime, timedelta
 import time
 import telegram.error
+import traceback  # Added for error stack trace
+import inspect  # Added for source code retrieval
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -69,7 +71,7 @@ def fetch_binance_symbols():
         logger.info(f"Fetched {len(symbols)} active USDT perpetual futures symbols from Binance")
         return symbols
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching futures symbols from Binance: {e}")
+        logger.error(f"Error fetching futures symbols from Binance: {e}\nStack Trace:\n{traceback.format_exc()}")
         return []
 
 SELECTED_SYMBOLS = fetch_binance_symbols()
@@ -85,11 +87,14 @@ def get_current_price(symbol, retries=3, delay=2):
                 raise ValueError("Last price is None")
             return current_price
         except Exception as e:
-            logger.warning(f"Failed to fetch price for {symbol} on attempt {attempt + 1}/{retries}: {e}")
+            error_msg = (f"Failed to fetch price for {symbol} on attempt {attempt + 1}/{retries}: {e}\n"
+                         f"Operation: Fetching ticker price\n"
+                         f"Stack Trace:\n{traceback.format_exc()}")
+            logger.warning(error_msg)
             if attempt < retries - 1:
                 time.sleep(delay)
             else:
-                logger.error(f"Exhausted retries for {symbol}: No price data")
+                logger.error(f"Exhausted retries for {symbol}: No price data\n{error_msg}")
                 return None
 
 def calculate_unrealized_pnl():
@@ -245,7 +250,10 @@ def get_historical_data(symbol, interval, limit=250):
         df['RSI_EMA'] = ta.trend.EMAIndicator(df['RSI'], window=RSI_EMA_PERIOD).ema_indicator()
         return df
     except ccxt.ExchangeError as e:
-        logger.error(f"Binance fetch error for {symbol}: {e}")
+        error_msg = (f"Binance fetch error for {symbol}: {e}\n"
+                     f"Operation: Fetching historical OHLCV data\n"
+                     f"Stack Trace:\n{traceback.format_exc()}")
+        logger.error(error_msg)
         return pd.DataFrame()
 
 # RSI Crossover Check
@@ -253,11 +261,11 @@ def check_rsi_crossover(df):
     if len(df) < 3:
         return False, False
     curr_rsi = df['RSI'].iloc[-1]
-    last_rsi = df['RSI'].iloc[-1]
-    prev_rsi = df['RSI'].iloc[-2]
+    last_rsi = df['RSI'].iloc[-2]
+    prev_rsi = df['RSI'].iloc[-3]
     curr_rsi_ema = df['RSI_EMA'].iloc[-1]
-    last_rsi_ema = df['RSI_EMA'].iloc[-1]
-    prev_rsi_ema = df['RSI_EMA'].iloc[-2]
+    last_rsi_ema = df['RSI_EMA'].iloc[-2]
+    prev_rsi_ema = df['RSI_EMA'].iloc[-3]
     
     cross_over = prev_rsi <= prev_rsi_ema and last_rsi > last_rsi_ema
     cross_under = prev_rsi >= prev_rsi_ema and last_rsi < last_rsi_ema
@@ -269,7 +277,10 @@ async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: st
         await bot.send_message(chat_id=chat_id, text=message)
         logger.info(f"Sent alert for {symbol}: {message}")
     except Exception as e:
-        logger.error(f"Failed to send Telegram message for {symbol}: {e}")
+        error_msg = (f"Failed to send Telegram message for {symbol}: {e}\n"
+                     f"Operation: Sending Telegram notification\n"
+                     f"Stack Trace:\n{traceback.format_exc()}")
+        logger.error(error_msg)
 
 async def audit_balance():
     total_net_profit = sum(trade['net_profit'] for trade in trade_history)
@@ -505,7 +516,10 @@ async def check_alerts(bot: Bot):
                     last_alert_times[symbol] = current_time
                     del active_positions[symbol]
         except Exception as e:
-            logger.error(f"Error checking {symbol}: {e}")
+            error_msg = (f"Error checking {symbol}: {e}\n"
+                         f"Operation: Processing symbol in check_alerts\n"
+                         f"Stack Trace:\n{traceback.format_exc()}")
+            logger.error(error_msg)
             failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
             failed_symbols[symbol]['count'] += 1
             failed_symbols[symbol]['last_attempt'] = datetime.now()
@@ -513,14 +527,32 @@ async def check_alerts(bot: Bot):
 async def run_alert_loop(application: Application):
     bot = application.bot
     while True:
-        await check_alerts(bot)
+        try:
+            await check_alerts(bot)
+        except Exception as e:
+            error_msg = (f"Error in run_alert_loop: {e}\n"
+                         f"Operation: Running alert loop\n"
+                         f"Stack Trace:\n{traceback.format_exc()}")
+            logger.error(error_msg)
         await asyncio.sleep(300)
 
 async def main():
-    application = Application.builder().token(config.TELEGRAM_TOKEN).build()
-    asyncio.create_task(run_alert_loop(application))
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        application = Application.builder().token(config.TELEGRAM_TOKEN).build()
+        asyncio.create_task(run_alert_loop(application))
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        error_msg = (f"Error in main: {e}\n"
+                     f"Operation: Initializing and running application\n"
+                     f"Stack Trace:\n{traceback.format_exc()}")
+        logger.error(error_msg)
 
 if __name__ == '__main__':
     nest_asyncio.apply()
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        error_msg = (f"Error in script execution: {e}\n"
+                     f"Operation: Starting asyncio event loop\n"
+                     f"Stack Trace:\n{traceback.format_exc()}")
+        logger.error(error_msg)

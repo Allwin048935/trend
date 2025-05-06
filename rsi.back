@@ -33,7 +33,7 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trading parameters
-CHECK_INTERVAL = '15m'
+CHECK_INTERVAL = '1d'
 RSI_PERIOD = 14
 RSI_EMA_PERIOD = 14
 TRADE_FEE_PERCENT = 0.1
@@ -264,13 +264,13 @@ def check_rsi_crossover(df):
     if len(df) < 3:
         return False, False
     curr_rsi = df['RSI'].iloc[-1]
-    last_rsi = df['RSI'].iloc[-2]
-    prev_rsi = df['RSI'].iloc[-3]
+    last_rsi = df['RSI'].iloc[-1]
+    prev_rsi = df['RSI'].iloc[-1]
     curr_rsi_ema = df['RSI_EMA'].iloc[-1]
-    last_rsi_ema = df['RSI_EMA'].iloc[-2]
-    prev_rsi_ema = df['RSI_EMA'].iloc[-3]
-    cross_over = prev_rsi <= prev_rsi_ema and last_rsi > last_rsi_ema
-    cross_under = prev_rsi >= prev_rsi_ema and last_rsi < last_rsi_ema
+    last_rsi_ema = df['RSI_EMA'].iloc[-1]
+    prev_rsi_ema = df['RSI_EMA'].iloc[-1]
+    cross_over = prev_rsi >= prev_rsi_ema # and last_rsi > last_rsi_ema
+    cross_under = prev_rsi <= prev_rsi_ema #and last_rsi < last_rsi_ema
     return cross_over, cross_under
 
 async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str):
@@ -506,7 +506,7 @@ async def run_alert_loop(application: Application):
             await check_alerts(bot)
         except Exception as e:
             logger.error(f"Error in alert loop: {e}\n{traceback.format_exc()}")
-        await asyncio.sleep(300)
+        await asyncio.sleep(3600)
 
 async def main():
     try:

@@ -201,7 +201,7 @@ async def simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry
     net_profit = ((entry_price - current_price) * quantity) - (entry_fee + fee)
     net_proceeds = proceeds - fee
     if net_proceeds < 0:
-        logger.warning(f_devices = None) 
+        logger.warning(f"Negative proceeds ({net_proceeds:.4f}) for {symbol} SHORT")
     async with balance_lock:
         balance_before = virtual_balance
         virtual_balance += net_proceeds
@@ -259,19 +259,25 @@ def get_historical_data(symbol, interval, limit=500, retries=3, delay=2):
                 logger.error(f"Exhausted retries for {symbol}")
                 return pd.DataFrame()
 
-# RSI Crossover Check
-def check_rsi_crossover(df):
+# RSI Signal Check
+def check_rsi_signals(df, symbol):
     if len(df) < 3:
-        return False, False
+        return False, False, False, False
     curr_rsi = df['RSI'].iloc[-1]
-    last_rsi = df['RSI'].iloc[-1]
-    prev_rsi = df['RSI'].iloc[-1]
+    last_rsi = df['RSI'].iloc[-2]
     curr_rsi_ema = df['RSI_EMA'].iloc[-1]
-    last_rsi_ema = df['RSI_EMA'].iloc[-1]
-    prev_rsi_ema = df['RSI_EMA'].iloc[-1]
-    cross_over = prev_rsi >= prev_rsi_ema # and last_rsi > last_rsi_ema
-    cross_under = prev_rsi <= prev_rsi_ema #and last_rsi < last_rsi_ema
-    return cross_over, cross_under
+    last_rsi_ema = df['RSI_EMA'].iloc[-2]
+    
+    # Entry signals
+    cross_over = last_rsi <= last_rsi_ema and curr_rsi > curr_rsi_ema  # Long entry
+    cross_under = last_rsi >= last_rsi_ema and curr_rsi < curr_rsi_ema  # Short entry
+    
+    # Exit signals
+    last_type = last_alert_types.get(symbol)
+    cross_over_exit = last_type == 'long' and curr_rsi < curr_rsi_ema  # Exit long
+    cross_under_exit = last_type == 'short' and curr_rsi > curr_rsi_ema  # Exit short
+    
+    return cross_over, cross_under, cross_over_exit, cross_under_exit
 
 async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str):
     try:
@@ -314,13 +320,69 @@ async def check_alerts(bot: Bot):
                 failed_symbols[symbol]['last_attempt'] = datetime.now()
                 continue
             historical_data.name = symbol
-            cross_over, cross_under = check_rsi_crossover(historical_data)
+            cross_over, cross_under, cross_over_exit, cross_under_exit = check_rsi_signals(historical_data, symbol)
             total_trades = len(trade_history)
             overall_profit_loss = sum(trade['net_profit'] for trade in trade_history)
             open_trades = len(active_positions)
             unrealized_pnl_usdt, unrealized_pnl_percent = calculate_unrealized_pnl()
             
-            # Handle BUY signal
+            # Handle Long Exit
+            if cross_over_exit and symbol in active_positions and active_positions[symbol]['type'] == 'long':
+                position = active_positions[symbol]
+                exit_price = await simulate_close_long(symbol, position['entry_price'], position['quantity'], position['amount_usdt'], position['entry_fee'])
+                if exit_price is None:
+                    logger.error(f"Failed to close LONG for {symbol}")
+                    failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
+                    failed_symbols[symbol]['count'] += 1
+                    failed_symbols[symbol]['last_attempt'] = datetime.now()
+                    continue
+                net_profit = ((exit_price - position['entry_price']) * position['quantity']) - (position['entry_fee'] + (position['quantity'] * exit_price * (TRADE_FEE_PERCENT / 100)))
+                total_trades += 1
+                open_trades -= 1
+                message = (f"Simulated CLOSE LONG for #{symbol} at {exit_price:.8f}\n"
+                          f"Entry Price: {position['entry_price']:.8f}\n"
+                          f"Quantity: {position['quantity']:.8f}, Proceeds: {position['quantity'] * exit_price:.2f} USDT\n"
+                          f"Entry Fee: {position['entry_fee']:.4f}, Exit Fee: {(position['quantity'] * exit_price) * (TRADE_FEE_PERCENT / 100):.4f}\n"
+                          f"Net Profit: {net_profit:.4f} USDT\n"
+                          f"Reason: RSI < RSI_EMA (Long Exit)\n"
+                          f"Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
+                          f"Balance: {virtual_balance:.2f} USDT\n"
+                          f"Total Trades: {total_trades}\n"
+                          f"Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
+                          f"Open Trades: {open_trades}")
+                await send_telegram_message(bot, config.CHAT_ID, symbol, message)
+                del active_positions[symbol]
+                last_alert_types[symbol] = None  # Reset alert type after closing
+                
+            # Handle Short Exit
+            if cross_under_exit and symbol in active_positions and activeenea_positions[symbol]['type'] == 'short':
+                position = active_positions[symbol]
+                exit_price = await simulate_close_short(symbol, position['entry_price'], position['quantity'], position['amount_usdt'], position['entry_fee'])
+                if exit_price is None:
+                    logger.error(f"Failed to close SHORT for {symbol}")
+                    failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
+                    failed_symbols[symbol]['count'] += 1
+                    failed_symbols[symbol]['last_attempt'] = datetime.now()
+                    continue
+                net_profit = ((position['entry_price'] - exit_price) * position['quantity']) - (position['entry_fee'] + (position['quantity'] * position['entry_price'] * (TRADE_FEE_PERCENT / 100)))
+                total_trades += 1
+                open_trades -= 1
+                message = (f"Simulated CLOSE SHORT for #{symbol} at {exit_price:.8f}\n"
+                          f"Entry Price: {position['entry_price']:.8f}\n"
+                          f"Quantity: {position['quantity']:.8f}, Proceeds: {position['quantity'] * position['entry_price']:.2f} USDT\n"
+                          f"Entry Fee: {position['entry_fee']:.4f}, Exit Fee: {(position['quantity'] * position['entry_price']) * (TRADE_FEE_PERCENT / 100):.4f}\n"
+                          f"Net Profit: {net_profit:.4f} USDT\n"
+                          f"Reason: RSI > RSI_EMA (Short Exit)\n"
+                          f"Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
+                          f"Balance: {virtual_balance:.2f} USDT\n"
+                          f"Total Trades: {total_trades}\n"
+                          f"Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
+                          f"Open Trades: {open_trades}")
+                await send_telegram_message(bot, config.CHAT_ID, symbol, message)
+                del active_positions[symbol]
+                last_alert_types[symbol] = None  # Reset alert type after closing
+            
+            # Handle Long Entry
             if cross_over and last_alert_types.get(symbol) != 'long':
                 last_alert_types[symbol] = 'long'
                 if symbol in active_positions and active_positions[symbol]['type'] == 'short':
@@ -340,7 +402,7 @@ async def check_alerts(bot: Bot):
                               f"Quantity: {position['quantity']:.8f}, Proceeds: {position['quantity'] * position['entry_price']:.2f} USDT\n"
                               f"Entry Fee: {position['entry_fee']:.4f}, Exit Fee: {(position['quantity'] * position['entry_price']) * (TRADE_FEE_PERCENT / 100):.4f}\n"
                               f"Net Profit: {net_profit:.4f} USDT\n"
-                              f"Reason: Buy signal\n"
+                              f"Reason: RSI > RSI_EMA (Buy Signal)\n"
                               f"Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
                               f"Balance: {virtual_balance:.2f} USDT\n"
                               f"Total Trades: {total_trades}\n"
@@ -373,7 +435,7 @@ async def check_alerts(bot: Bot):
                           f"Open Trades: {open_trades}")
                 await send_telegram_message(bot, config.CHAT_ID, symbol, message)
             
-            # Handle SELL signal
+            # Handle Short Entry
             if cross_under and last_alert_types.get(symbol) != 'short':
                 last_alert_types[symbol] = 'short'
                 if symbol in active_positions and active_positions[symbol]['type'] == 'long':
@@ -393,7 +455,7 @@ async def check_alerts(bot: Bot):
                               f"Quantity: {position['quantity']:.8f}, Proceeds: {position['quantity'] * exit_price:.2f} USDT\n"
                               f"Entry Fee: {position['entry_fee']:.4f}, Exit Fee: {(position['quantity'] * exit_price) * (TRADE_FEE_PERCENT / 100):.4f}\n"
                               f"Net Profit: {net_profit:.4f} USDT\n"
-                              f"Reason: Sell signal\n"
+                              f"Reason: RSI < RSI_EMA (Sell Signal)\n"
                               f"Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
                               f"Balance: {virtual_balance:.2f} USDT\n"
                               f"Total Trades: {total_trades}\n"
@@ -493,6 +555,7 @@ async def check_alerts(bot: Bot):
                                   f"Open Trades: {open_trades}")
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message)
                     del active_positions[symbol]
+                    last_alert_types[symbol] = None  # Reset alert type after closing
         except Exception as e:
             logger.error(f"Error checking {symbol}: {e}\n{traceback.format_exc()}")
             failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})

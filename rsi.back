@@ -201,7 +201,7 @@ async def simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry
     net_profit = ((entry_price - current_price) * quantity) - (entry_fee + fee)
     net_proceeds = proceeds - fee
     if net_proceeds < 0:
-        logger.warning(f_devices = None
+        logger.warning(f_devices = None) 
     async with balance_lock:
         balance_before = virtual_balance
         virtual_balance += net_proceeds

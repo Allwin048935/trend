@@ -15,10 +15,10 @@ import traceback  # For error stack trace
 
 # Set up logging
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)  # Set to DEBUG for detailed diagnostics if needed
+logger.setLevel(logging.INFO)
 
 file_handler = logging.FileHandler('trading_bot.log')
-file_handler.setLevel(logging.INFO)  # Set to DEBUG if needed
+file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 console_handler = logging.StreamHandler()
@@ -33,11 +33,11 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trading parameters
-CHECK_INTERVAL = '15m'  # For RSI crossover checks
-RSI_PERIOD = 14  # RSI period
-RSI_EMA_PERIOD = 14  # EMA of RSI period
-TRADE_FEE_PERCENT = 0.1  # 0.1% fee for futures
-MAX_RETRIES = 5  # Maximum retries for failed symbols
+CHECK_INTERVAL = '15m'
+RSI_PERIOD = 14
+RSI_EMA_PERIOD = 14
+TRADE_FEE_PERCENT = 0.1
+MAX_RETRIES = 5
 
 # Binance client
 binance = ccxt.binance({
@@ -47,16 +47,16 @@ binance = ccxt.binance({
     'options': {'defaultType': 'future'}
 })
 
-# Store active positions, last alert times, virtual balance, and failed symbols
-active_positions = {}  # Format: {symbol: {'type': 'long'/'short', 'entry_price': float, 'quantity': float, 'amount_usdt': float, 'entry_fee': float}}
-last_alert_times = {}  # Track last alert time per symbol
-virtual_balance = 10000.0  # Starting virtual balance in USD
-trade_history = []  # Store trade details for tracking
-failed_symbols = {}  # Format: {symbol: {'count': int, 'last_attempt': datetime}}
-balance_lock = asyncio.Lock()  # Lock for thread-safe balance updates
-loop_counter = 0  # Counter for periodic balance audit
+# Store active positions, last alert types, virtual balance, and failed symbols
+active_positions = {}  # {symbol: {'type': 'long'/'short', 'entry_price': float, 'quantity': float, 'amount_usdt': float, 'entry_fee': float}}
+last_alert_types = {}  # {symbol: 'long'/'short'} to track last signal type
+virtual_balance = 10000.0
+trade_history = []
+failed_symbols = {}  # {symbol: {'count': int, 'last_attempt': datetime}}
+balance_lock = asyncio.Lock()
+loop_counter = 0
 
-# Fetch SELECTED_SYMBOLS dynamically from Binance Futures
+# Fetch USDT perpetual futures symbols from Binance
 def fetch_binance_symbols():
     url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
     try:
@@ -67,10 +67,10 @@ def fetch_binance_symbols():
             s['symbol'] for s in data['symbols']
             if s['quoteAsset'] == 'USDT' and s['status'] == 'TRADING' and s['contractType'] == 'PERPETUAL'
         ]
-        logger.info(f"Fetched {len(symbols)} active USDT perpetual futures symbols from Binance")
+        logger.info(f"Fetched {len(symbols)} active USDT perpetual futures symbols")
         return symbols
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching futures symbols from Binance: {e}\nStack Trace:\n{traceback.format_exc()}")
+        logger.error(f"Error fetching symbols: {e}\n{traceback.format_exc()}")
         return []
 
 SELECTED_SYMBOLS = fetch_binance_symbols()
@@ -86,14 +86,11 @@ def get_current_price(symbol, retries=3, delay=2):
                 raise ValueError("Last price is None")
             return current_price
         except Exception as e:
-            error_msg = (f"Failed to fetch price for {symbol} on attempt {attempt + 1}/{retries}: {e}\n"
-                         f"Operation: Fetching ticker price\n"
-                         f"Stack Trace:\n{traceback.format_exc()}")
-            logger.warning(error_msg)
+            logger.warning(f"Failed to fetch price for {symbol}, attempt {attempt + 1}/{retries}: {e}\n{traceback.format_exc()}")
             if attempt < retries - 1:
                 time.sleep(delay)
             else:
-                logger.error(f"Exhausted retries for {symbol}: No price data\n{error_msg}")
+                logger.error(f"Exhausted retries for {symbol}: No price data")
                 return None
 
 def calculate_unrealized_pnl():
@@ -102,14 +99,14 @@ def calculate_unrealized_pnl():
     for symbol, position in active_positions.items():
         current_price = get_current_price(symbol)
         if current_price is None:
-            logger.warning(f"Cannot calculate unrealized PNL for {symbol}: No price data")
+            logger.warning(f"Cannot calculate PNL for {symbol}: No price")
             continue
         entry_price = position['entry_price']
         quantity = position['quantity']
         if position['type'] == 'long':
             pnl_usdt = quantity * (current_price - entry_price)
             pnl_percent = ((current_price - entry_price) / entry_price) * 100
-        else:  # short
+        else:
             pnl_usdt = quantity * (entry_price - current_price)
             pnl_percent = ((entry_price - current_price) / entry_price) * 100
         total_unrealized_pnl_usdt += pnl_usdt
@@ -120,41 +117,41 @@ async def simulate_open_long(symbol, amount_usdt=15.0):
     global virtual_balance
     current_price = get_current_price(symbol)
     if current_price is None:
-        logger.error(f"Cannot simulate LONG for {symbol}: No price data")
+        logger.error(f"Cannot simulate LONG for {symbol}: No price")
         return None, None, None, None
     quantity = amount_usdt / current_price
     fee = amount_usdt * (TRADE_FEE_PERCENT / 100)
     total_deduction = amount_usdt + fee
     async with balance_lock:
         if virtual_balance < total_deduction:
-            logger.error(f"Insufficient virtual balance for LONG on {symbol}: {virtual_balance:.2f} < {total_deduction:.2f}")
+            logger.error(f"Insufficient balance for LONG on {symbol}: {virtual_balance:.2f} < {total_deduction:.2f}")
             return None, None, None, None
         virtual_balance -= total_deduction
-    logger.info(f"Simulated LONG for {symbol}: Price {current_price:.8f}, Quantity {quantity:.8f}, Amount {amount_usdt:.2f}, Fee {fee:.4f}, Total Deduction {total_deduction:.4f}, New Balance {virtual_balance:.2f}")
+    logger.info(f"Simulated LONG for {symbol}: Price {current_price:.8f}, Quantity {quantity:.8f}, Amount {amount_usdt:.2f}, Fee {fee:.4f}, Balance {virtual_balance:.2f}")
     return current_price, quantity, amount_usdt, fee
 
 async def simulate_open_short(symbol, amount_usdt=15.0):
     global virtual_balance
     current_price = get_current_price(symbol)
     if current_price is None:
-        logger.error(f"Cannot simulate SHORT for {symbol}: No price data")
+        logger.error(f"Cannot simulate SHORT for {symbol}: No price")
         return None, None, None, None
     quantity = amount_usdt / current_price
     fee = amount_usdt * (TRADE_FEE_PERCENT / 100)
     total_deduction = amount_usdt + fee
     async with balance_lock:
         if virtual_balance < total_deduction:
-            logger.error(f"Insufficient virtual balance for SHORT on {symbol}: {virtual_balance:.2f} < {total_deduction:.2f}")
+            logger.error(f"Insufficient balance for SHORT on {symbol}: {virtual_balance:.2f} < {total_deduction:.2f}")
             return None, None, None, None
         virtual_balance -= total_deduction
-    logger.info(f"Simulated SHORT for {symbol}: Price {current_price:.8f}, Quantity {quantity:.8f}, Amount {amount_usdt:.2f}, Fee {fee:.4f}, Total Deduction {total_deduction:.4f}, New Balance {virtual_balance:.2f}")
+    logger.info(f"Simulated SHORT for {symbol}: Price {current_price:.8f}, Quantity {quantity:.8f}, Amount {amount_usdt:.2f}, Fee {fee:.4f}, Balance {virtual_balance:.2f}")
     return current_price, quantity, amount_usdt, fee
 
 async def simulate_close_long(symbol, entry_price, quantity, amount_usdt, entry_fee):
     global virtual_balance
     current_price = get_current_price(symbol)
     if current_price is None:
-        logger.error(f"Cannot simulate CLOSE LONG for {symbol}: No price data")
+        logger.error(f"Cannot simulate CLOSE LONG for {symbol}: No price")
         return None
     profit_percentage = ((current_price - entry_price) / entry_price) * 100
     proceeds = quantity * current_price
@@ -162,13 +159,12 @@ async def simulate_close_long(symbol, entry_price, quantity, amount_usdt, entry_
     net_profit = ((current_price - entry_price) * quantity) - (entry_fee + fee)
     net_proceeds = proceeds - fee
     if net_proceeds < 0:
-        logger.warning(f"Negative net proceeds ({net_proceeds:.4f}) for {symbol} LONG")
+        logger.warning(f"Negative proceeds ({net_proceeds:.4f}) for {symbol} LONG")
     async with balance_lock:
         balance_before = virtual_balance
         virtual_balance += net_proceeds
-        expected_balance = balance_before + net_proceeds
-        if abs(virtual_balance - expected_balance) > 0.0001:
-            logger.error(f"Balance mismatch for {symbol} LONG: Expected {expected_balance:.2f}, Got {virtual_balance:.2f}")
+        if abs(virtual_balance - (balance_before + net_proceeds)) > 0.0001:
+            logger.error(f"Balance mismatch for {symbol} LONG: Expected {balance_before + net_proceeds:.2f}, Got {virtual_balance:.2f}")
     trade_history.append({
         'symbol': symbol,
         'type': 'long',
@@ -189,15 +185,15 @@ async def simulate_close_long(symbol, entry_price, quantity, amount_usdt, entry_
         trade_history.pop(0)
     if len(trade_history) % 100 == 0:
         pd.DataFrame(trade_history).to_csv('trade_history.csv', index=False)
-        logger.info("Saved trade history to trade_history.csv")
-    logger.info(f"Simulated CLOSE LONG for {symbol}: Entry Price {entry_price:.8f}, Exit Price {current_price:.8f}, Quantity {quantity:.8f}, Proceeds {proceeds:.2f}, Entry Fee {entry_fee:.4f}, Exit Fee {fee:.4f}, Net Profit {net_profit:.4f}, Net Proceeds {net_proceeds:.4f}, Profit {profit_percentage:.2f}%, Balance Before {balance_before:.2f}, Balance After {virtual_balance:.2f}")
+        logger.info("Saved trade history")
+    logger.info(f"Simulated CLOSE LONG for {symbol}: Exit {current_price:.8f}, Profit {profit_percentage:.2f}%, Net Profit {net_profit:.4f}, Balance {virtual_balance:.2f}")
     return current_price
 
 async def simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry_fee):
     global virtual_balance
     current_price = get_current_price(symbol)
     if current_price is None:
-        logger.error(f"Cannot simulate CLOSE SHORT for {symbol}: No price data")
+        logger.error(f"Cannot simulate CLOSE SHORT for {symbol}: No price")
         return None
     profit_percentage = ((entry_price - current_price) / entry_price) * 100
     proceeds = quantity * entry_price
@@ -205,13 +201,12 @@ async def simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry
     net_profit = ((entry_price - current_price) * quantity) - (entry_fee + fee)
     net_proceeds = proceeds - fee
     if net_proceeds < 0:
-        logger.warning(f"Negative net proceeds ({net_proceeds:.4f}) for {symbol} SHORT")
+        logger.warning(f_devices = None
     async with balance_lock:
         balance_before = virtual_balance
         virtual_balance += net_proceeds
-        expected_balance = balance_before + net_proceeds
-        if abs(virtual_balance - expected_balance) > 0.0001:
-            logger.error(f"Balance mismatch for {symbol} SHORT: Expected {expected_balance:.2f}, Got {virtual_balance:.2f}")
+        if abs(virtual_balance - (balance_before + net_proceeds)) > 0.0001:
+            logger.error(f"Balance mismatch for {symbol} SHORT: Expected {balance_before + net_proceeds:.2f}, Got {virtual_balance:.2f}")
     trade_history.append({
         'symbol': symbol,
         'type': 'short',
@@ -232,60 +227,36 @@ async def simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry
         trade_history.pop(0)
     if len(trade_history) % 100 == 0:
         pd.DataFrame(trade_history).to_csv('trade_history.csv', index=False)
-        logger.info("Saved trade history to trade_history.csv")
-    logger.info(f"Simulated CLOSE SHORT for {symbol}: Entry Price {entry_price:.8f}, Exit Price {current_price:.8f}, Quantity {quantity:.8f}, Proceeds {proceeds:.2f}, Entry Fee {entry_fee:.4f}, Exit Fee {fee:.4f}, Net Profit {net_profit:.4f}, Net Proceeds {net_proceeds:.4f}, Profit {profit_percentage:.2f}%, Balance Before {balance_before:.2f}, Balance After {virtual_balance:.2f}")
+        logger.info("Saved trade history")
+    logger.info(f"Simulated CLOSE SHORT for {symbol}: Exit {current_price:.8f}, Profit {profit_percentage:.2f}%, Net Profit {net_profit:.4f}, Balance {virtual_balance:.2f}")
     return current_price
 
 # Binance Data Functions
 def get_historical_data(symbol, interval, limit=500, retries=3, delay=2):
-    """
-    Fetch historical OHLCV data and calculate RSI and RSI EMA using ta library.
-    """
     symbol_with_slash = symbol.replace("USDT", "/USDT")
     for attempt in range(retries):
         try:
-            # Fetch OHLCV data
             ohlcv = binance.fetch_ohlcv(symbol_with_slash, interval, limit=limit)
             if not ohlcv:
-                logger.warning(f"No OHLCV data returned for {symbol} on attempt {attempt + 1}/{retries}")
+                logger.warning(f"No OHLCV data for {symbol}, attempt {attempt + 1}/{retries}")
                 raise ValueError("Empty OHLCV data")
-            
-            # Create DataFrame
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
-            logger.debug(f"Fetched {len(df)} candles for {symbol} with interval {interval}")
-            
-            # Calculate RSI and RSI EMA
             df['RSI'] = ta.momentum.RSIIndicator(close=df['Close'], window=RSI_PERIOD).rsi()
             df['RSI_EMA'] = ta.trend.EMAIndicator(close=df['RSI'], window=RSI_EMA_PERIOD).ema_indicator()
-            
-            # Log DataFrame size before dropping NaN
-            logger.debug(f"DataFrame size before dropna for {symbol}: {len(df)} rows")
-            
-            # Drop rows with NaN values in RSI or RSI_EMA
             df = df.dropna(subset=['RSI', 'RSI_EMA'])
-            
-            # Log DataFrame size after dropping NaN
-            logger.debug(f"DataFrame size after dropna for {symbol}: {len(df)} rows")
-            
-            # Check if enough data remains
             required_rows = max(RSI_PERIOD, RSI_EMA_PERIOD) + 3
             if len(df) < required_rows:
-                logger.warning(f"Insufficient data for {symbol} after processing: {len(df)} rows, required {required_rows}")
+                logger.warning(f"Insufficient data for {symbol}: {len(df)} rows, required {required_rows}")
                 return pd.DataFrame()
-            
             return df
-        
         except Exception as e:
-            error_msg = (f"Failed to fetch/process data for {symbol} on attempt {attempt + 1}/{retries}: {e}\n"
-                         f"Operation: Fetching historical OHLCV data\n"
-                         f"Stack Trace:\n{traceback.format_exc()}")
-            logger.warning(error_msg)
+            logger.warning(f"Failed to fetch data for {symbol}, attempt {attempt + 1}/{retries}: {e}\n{traceback.format_exc()}")
             if attempt < retries - 1:
-                time.sleep(delay * (2 ** attempt))  # Exponential backoff
+                time.sleep(delay * (2 ** attempt))
             else:
-                logger.error(f"Exhausted retries for {symbol}: {error_msg}")
+                logger.error(f"Exhausted retries for {symbol}")
                 return pd.DataFrame()
 
 # RSI Crossover Check
@@ -298,10 +269,8 @@ def check_rsi_crossover(df):
     curr_rsi_ema = df['RSI_EMA'].iloc[-1]
     last_rsi_ema = df['RSI_EMA'].iloc[-2]
     prev_rsi_ema = df['RSI_EMA'].iloc[-3]
-    
     cross_over = prev_rsi <= prev_rsi_ema and last_rsi > last_rsi_ema
     cross_under = prev_rsi >= prev_rsi_ema and last_rsi < last_rsi_ema
-    
     return cross_over, cross_under
 
 async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str):
@@ -309,15 +278,12 @@ async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: st
         await bot.send_message(chat_id=chat_id, text=message)
         logger.info(f"Sent alert for {symbol}: {message}")
     except Exception as e:
-        error_msg = (f"Failed to send Telegram message for {symbol}: {e}\n"
-                     f"Operation: Sending Telegram notification\n"
-                     f"Stack Trace:\n{traceback.format_exc()}")
-        logger.error(error_msg)
+        logger.error(f"Failed to send Telegram message for {symbol}: {e}\n{traceback.format_exc()}")
 
 async def audit_balance():
     total_net_profit = sum(trade['net_profit'] for trade in trade_history)
     unrealized_pnl_usdt, unrealized_pnl_percent = calculate_unrealized_pnl()
-    logger.info(f"Balance Audit: Virtual Balance={virtual_balance:.2f}, Total Net Profit={total_net_profit:.4f}, Unrealized PNL={unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)")
+    logger.info(f"Balance Audit: Balance={virtual_balance:.2f}, Net Profit={total_net_profit:.4f}, Unrealized PNL={unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)")
 
 async def check_alerts(bot: Bot):
     global loop_counter
@@ -325,78 +291,66 @@ async def check_alerts(bot: Bot):
     if loop_counter % 10 == 0:
         await audit_balance()
     if not SELECTED_SYMBOLS:
-        logger.error("No symbols selected to check - bot cannot proceed without symbols")
+        logger.error("No symbols selected")
         return
-    for symbol in SELECTED_SYMBOLS.copy():  # Copy to allow modification
+    for symbol in SELECTED_SYMBOLS.copy():
         if symbol in failed_symbols and failed_symbols[symbol]['count'] >= MAX_RETRIES:
-            logger.error(f"Symbol {symbol} failed {MAX_RETRIES} times - removing from active monitoring")
+            logger.error(f"Symbol {symbol} failed {MAX_RETRIES} times - removing")
             SELECTED_SYMBOLS.remove(symbol)
             continue
         try:
-            current_time = datetime.now()
-            last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 900:
-                logger.info(f"Cooldown active for {symbol}, skipping alert")
-                continue
             historical_data = get_historical_data(symbol, CHECK_INTERVAL, limit=max(RSI_PERIOD, RSI_EMA_PERIOD) + 50)
             if historical_data.empty:
-                logger.warning(f"No historical data fetched for {symbol} - skipping")
+                logger.warning(f"No data for {symbol}")
                 failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
                 failed_symbols[symbol]['count'] += 1
                 failed_symbols[symbol]['last_attempt'] = datetime.now()
                 continue
             required_rows = max(RSI_PERIOD, RSI_EMA_PERIOD) + 3
             if len(historical_data) < required_rows:
-                logger.warning(f"Insufficient historical data for {symbol}: {len(historical_data)} rows, required {required_rows}")
+                logger.warning(f"Insufficient data for {symbol}: {len(historical_data)} rows")
                 failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
                 failed_symbols[symbol]['count'] += 1
                 failed_symbols[symbol]['last_attempt'] = datetime.now()
                 continue
             historical_data.name = symbol
             cross_over, cross_under = check_rsi_crossover(historical_data)
-            
-            # Calculate trade statistics
             total_trades = len(trade_history)
             overall_profit_loss = sum(trade['net_profit'] for trade in trade_history)
             open_trades = len(active_positions)
             unrealized_pnl_usdt, unrealized_pnl_percent = calculate_unrealized_pnl()
             
-            # Handle BUY signal (close SHORT if exists and open LONG)
-            if cross_over:
+            # Handle BUY signal
+            if cross_over and last_alert_types.get(symbol) != 'long':
+                last_alert_types[symbol] = 'long'
                 if symbol in active_positions and active_positions[symbol]['type'] == 'short':
                     position = active_positions[symbol]
-                    entry_price = position['entry_price']
-                    quantity = position['quantity']
-                    amount_usdt = position['amount_usdt']
-                    entry_fee = position['entry_fee']
-                    exit_price = await simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry_fee)
+                    exit_price = await simulate_close_short(symbol, position['entry_price'], position['quantity'], position['amount_usdt'], position['entry_fee'])
                     if exit_price is None:
-                        logger.error(f"Failed to simulate CLOSE SHORT for {symbol}")
+                        logger.error(f"Failed to close SHORT for {symbol}")
                         failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
                         failed_symbols[symbol]['count'] += 1
                         failed_symbols[symbol]['last_attempt'] = datetime.now()
                         continue
-                    net_profit = ((entry_price - exit_price) * quantity) - (entry_fee + (quantity * entry_price * (TRADE_FEE_PERCENT / 100)))
+                    net_profit = ((position['entry_price'] - exit_price) * position['quantity']) - (position['entry_fee'] + (position['quantity'] * position['entry_price'] * (TRADE_FEE_PERCENT / 100)))
                     total_trades += 1
                     open_trades -= 1
                     message = (f"Simulated CLOSE SHORT for #{symbol} at {exit_price:.8f}\n"
-                              f"Entry Price: {entry_price:.8f}\n"
-                              f"Quantity: {quantity:.8f}, Proceeds: {quantity * entry_price:.2f} USDT\n"
-                              f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * entry_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                              f"Entry Price: {position['entry_price']:.8f}\n"
+                              f"Quantity: {position['quantity']:.8f}, Proceeds: {position['quantity'] * position['entry_price']:.2f} USDT\n"
+                              f"Entry Fee: {position['entry_fee']:.4f}, Exit Fee: {(position['quantity'] * position['entry_price']) * (TRADE_FEE_PERCENT / 100):.4f}\n"
                               f"Net Profit: {net_profit:.4f} USDT\n"
-                              f"Reason: Buy signal (RSI crossed over RSI EMA)\n"
-                              f"Cumulative Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
-                              f"Virtual Balance: {virtual_balance:.2f} USDT\n"
-                              f"Total Completed Trades: {total_trades}\n"
-                              f"Overall Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
-                              f"Current Open Trades: {open_trades}")
+                              f"Reason: Buy signal\n"
+                              f"Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
+                              f"Balance: {virtual_balance:.2f} USDT\n"
+                              f"Total Trades: {total_trades}\n"
+                              f"Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
+                              f"Open Trades: {open_trades}")
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message)
-                    last_alert_times[symbol] = current_time
                     del active_positions[symbol]
-                
                 entry_price, quantity, amount_usdt, entry_fee = await simulate_open_long(symbol)
                 if entry_price is None:
-                    logger.error(f"Failed to simulate LONG for {symbol}")
+                    logger.error(f"Failed to open LONG for {symbol}")
                     failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
                     failed_symbols[symbol]['count'] += 1
                     failed_symbols[symbol]['last_attempt'] = datetime.now()
@@ -412,50 +366,44 @@ async def check_alerts(bot: Bot):
                 message = (f"Simulated LONG for #{symbol} at {entry_price:.8f}\n"
                           f"Quantity: {quantity:.8f}, Amount: {amount_usdt:.2f} USDT\n"
                           f"Fee: {entry_fee:.4f} USDT\n"
-                          f"Cumulative Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
-                          f"Virtual Balance: {virtual_balance:.2f} USDT\n"
-                          f"Total Completed Trades: {total_trades}\n"
-                          f"Overall Net Profit: {overall_profit_loss:.4f} USDT\n"
-                          f"Current Open Trades: {open_trades}")
+                          f"Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
+                          f"Balance: {virtual_balance:.2f} USDT\n"
+                          f"Total Trades: {total_trades}\n"
+                          f"Net Profit: {overall_profit_loss:.4f} USDT\n"
+                          f"Open Trades: {open_trades}")
                 await send_telegram_message(bot, config.CHAT_ID, symbol, message)
-                last_alert_times[symbol] = current_time
             
-            # Handle SELL signal (close LONG if exists and open SHORT)
-            if cross_under:
+            # Handle SELL signal
+            if cross_under and last_alert_types.get(symbol) != 'short':
+                last_alert_types[symbol] = 'short'
                 if symbol in active_positions and active_positions[symbol]['type'] == 'long':
                     position = active_positions[symbol]
-                    entry_price = position['entry_price']
-                    quantity = position['quantity']
-                    amount_usdt = position['amount_usdt']
-                    entry_fee = position['entry_fee']
-                    exit_price = await simulate_close_long(symbol, entry_price, quantity, amount_usdt, entry_fee)
+                    exit_price = await simulate_close_long(symbol, position['entry_price'], position['quantity'], position['amount_usdt'], position['entry_fee'])
                     if exit_price is None:
-                        logger.error(f"Failed to simulate CLOSE LONG for {symbol}")
+                        logger.error(f"Failed to close LONG for {symbol}")
                         failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
                         failed_symbols[symbol]['count'] += 1
                         failed_symbols[symbol]['last_attempt'] = datetime.now()
                         continue
-                    net_profit = ((exit_price - entry_price) * quantity) - (entry_fee + (quantity * exit_price * (TRADE_FEE_PERCENT / 100)))
+                    net_profit = ((exit_price - position['entry_price']) * position['quantity']) - (position['entry_fee'] + (position['quantity'] * exit_price * (TRADE_FEE_PERCENT / 100)))
                     total_trades += 1
                     open_trades -= 1
                     message = (f"Simulated CLOSE LONG for #{symbol} at {exit_price:.8f}\n"
-                              f"Entry Price: {entry_price:.8f}\n"
-                              f"Quantity: {quantity:.8f}, Proceeds: {quantity * exit_price:.2f} USDT\n"
-                              f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * exit_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                              f"Entry Price: {position['entry_price']:.8f}\n"
+                              f"Quantity: {position['quantity']:.8f}, Proceeds: {position['quantity'] * exit_price:.2f} USDT\n"
+                              f"Entry Fee: {position['entry_fee']:.4f}, Exit Fee: {(position['quantity'] * exit_price) * (TRADE_FEE_PERCENT / 100):.4f}\n"
                               f"Net Profit: {net_profit:.4f} USDT\n"
-                              f"Reason: Sell signal (RSI crossed under RSI EMA)\n"
-                              f"Cumulative Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
-                              f"Virtual Balance: {virtual_balance:.2f} USDT\n"
-                              f"Total Completed Trades: {total_trades}\n"
-                              f"Overall Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
-                              f"Current Open Trades: {open_trades}")
+                              f"Reason: Sell signal\n"
+                              f"Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
+                              f"Balance: {virtual_balance:.2f} USDT\n"
+                              f"Total Trades: {total_trades}\n"
+                              f"Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
+                              f"Open Trades: {open_trades}")
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message)
-                    last_alert_times[symbol] = current_time
                     del active_positions[symbol]
-                
                 entry_price, quantity, amount_usdt, entry_fee = await simulate_open_short(symbol)
                 if entry_price is None:
-                    logger.error(f"Failed to simulate SHORT for {symbol}")
+                    logger.error(f"Failed to open SHORT for {symbol}")
                     failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
                     failed_symbols[symbol]['count'] += 1
                     failed_symbols[symbol]['last_attempt'] = datetime.now()
@@ -471,21 +419,16 @@ async def check_alerts(bot: Bot):
                 message = (f"Simulated SHORT for #{symbol} at {entry_price:.8f}\n"
                           f"Quantity: {quantity:.8f}, Amount: {amount_usdt:.2f} USDT\n"
                           f"Fee: {entry_fee:.4f} USDT\n"
-                          f"Cumulative Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
-                          f"Virtual Balance: {virtual_balance:.2f} USDT\n"
-                          f"Total Completed Trades: {total_trades}\n"
-                          f"Overall Net Profit: {overall_profit_loss:.4f} USDT\n"
-                          f"Current Open Trades: {open_trades}")
+                          f"Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
+                          f"Balance: {virtual_balance:.2f} USDT\n"
+                          f"Total Trades: {total_trades}\n"
+                          f"Net Profit: {overall_profit_loss:.4f} USDT\n"
+                          f"Open Trades: {open_trades}")
                 await send_telegram_message(bot, config.CHAT_ID, symbol, message)
-                last_alert_times[symbol] = current_time
             
-            # Check for profit/stop-loss on open positions
+            # Check profit/stop-loss
             if symbol in active_positions:
                 position = active_positions[symbol]
-                entry_price = position['entry_price']
-                quantity = position['quantity']
-                amount_usdt = position['amount_usdt']
-                entry_fee = position['entry_fee']
                 current_price = get_current_price(symbol)
                 if current_price is None:
                     logger.error(f"Failed to get price for {symbol}")
@@ -493,75 +436,65 @@ async def check_alerts(bot: Bot):
                     failed_symbols[symbol]['count'] += 1
                     failed_symbols[symbol]['last_attempt'] = datetime.now()
                     continue
-                if position['type'] == 'long':
-                    profit_percentage = ((current_price - entry_price) / entry_price) * 100
-                else:  # short
-                    profit_percentage = ((entry_price - current_price) / entry_price) * 100
-                
+                profit_percentage = ((current_price - position['entry_price']) / position['entry_price']) * 100 if position['type'] == 'long' else ((position['entry_price'] - current_price) / position['entry_price']) * 100
                 close_trigger = False
                 close_reason = ""
                 if profit_percentage >= 15:
                     close_trigger = True
-                    close_reason = "15% profit target reached"
+                    close_reason = "15% profit target"
                 elif profit_percentage <= -15:
                     close_trigger = True
-                    close_reason = "stop-loss triggered at -15%"
-                
+                    close_reason = "Stop-loss at -15%"
                 if close_trigger:
                     unrealized_pnl_usdt, unrealized_pnl_percent = calculate_unrealized_pnl()
                     if position['type'] == 'long':
-                        exit_price = await simulate_close_long(symbol, entry_price, quantity, amount_usdt, entry_fee)
+                        exit_price = await simulate_close_long(symbol, position['entry_price'], position['quantity'], position['amount_usdt'], position['entry_fee'])
                         if exit_price is None:
-                            logger.error(f"Failed to simulate CLOSE LONG for {symbol}")
+                            logger.error(f"Failed to close LONG for {symbol}")
                             failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
                             failed_symbols[symbol]['count'] += 1
                             failed_symbols[symbol]['last_attempt'] = datetime.now()
                             continue
-                        net_profit = ((exit_price - entry_price) * quantity) - (entry_fee + (quantity * exit_price * (TRADE_FEE_PERCENT / 100)))
+                        net_profit = ((exit_price - position['entry_price']) * position['quantity']) - (position['entry_fee'] + (position['quantity'] * exit_price * (TRADE_FEE_PERCENT / 100)))
                         total_trades += 1
                         open_trades -= 1
                         message = (f"Simulated CLOSE LONG for #{symbol} at {exit_price:.8f}\n"
-                                  f"Entry Price: {entry_price:.8f}\n"
-                                  f"Quantity: {quantity:.8f}, Proceeds: {quantity * exit_price:.2f} USDT\n"
-                                  f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * exit_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                                  f"Entry Price: {position['entry_price']:.8f}\n"
+                                  f"Quantity: {position['quantity']:.8f}, Proceeds: {position['quantity'] * exit_price:.2f} USDT\n"
+                                  f"Entry Fee: {position['entry_fee']:.4f}, Exit Fee: {(position['quantity'] * exit_price) * (TRADE_FEE_PERCENT / 100):.4f}\n"
                                   f"Net Profit: {net_profit:.4f} USDT\n"
                                   f"Reason: {close_reason}\n"
-                                  f"Cumulative Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
-                                  f"Virtual Balance: {virtual_balance:.2f} USDT\n"
-                                  f"Total Completed Trades: {total_trades}\n"
-                                  f"Overall Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
-                                  f"Current Open Trades: {open_trades}")
-                    else:  # short
-                        exit_price = await simulate_close_short(symbol, entry_price, quantity, amount_usdt, entry_fee)
+                                  f"Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
+                                  f"Balance: {virtual_balance:.2f} USDT\n"
+                                  f"Total Trades: {total_trades}\n"
+                                  f"Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
+                                  f"Open Trades: {open_trades}")
+                    else:
+                        exit_price = await simulate_close_short(symbol, position['entry_price'], position['quantity'], position['amount_usdt'], position['entry_fee'])
                         if exit_price is None:
-                            logger.error(f"Failed to simulate CLOSE SHORT for {symbol}")
+                            logger.error(f"Failed to close SHORT for {symbol}")
                             failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
                             failed_symbols[symbol]['count'] += 1
                             failed_symbols[symbol]['last_attempt'] = datetime.now()
                             continue
-                        net_profit = ((entry_price - exit_price) * quantity) - (entry_fee + (quantity * entry_price * (TRADE_FEE_PERCENT / 100)))
+                        net_profit = ((position['entry_price'] - exit_price) * position['quantity']) - (position['entry_fee'] + (position['quantity'] * position['entry_price'] * (TRADE_FEE_PERCENT / 100)))
                         total_trades += 1
                         open_trades -= 1
                         message = (f"Simulated CLOSE SHORT for #{symbol} at {exit_price:.8f}\n"
-                                  f"Entry Price: {entry_price:.8f}\n"
-                                  f"Quantity: {quantity:.8f}, Proceeds: {quantity * entry_price:.2f} USDT\n"
-                                  f"Entry Fee: {entry_fee:.4f} USDT, Exit Fee: {(quantity * entry_price) * (TRADE_FEE_PERCENT / 100):.4f} USDT\n"
+                                  f"Entry Price: {position['entry_price']:.8f}\n"
+                                  f"Quantity: {position['quantity']:.8f}, Proceeds: {position['quantity'] * position['entry_price']:.2f} USDT\n"
+                                  f"Entry Fee: {position['entry_fee']:.4f}, Exit Fee: {(position['quantity'] * position['entry_price']) * (TRADE_FEE_PERCENT / 100):.4f}\n"
                                   f"Net Profit: {net_profit:.4f} USDT\n"
                                   f"Reason: {close_reason}\n"
-                                  f"Cumulative Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
-                                  f"Virtual Balance: {virtual_balance:.2f} USDT\n"
-                                  f"Total Completed Trades: {total_trades}\n"
-                                  f"Overall Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
-                                  f"Current Open Trades: {open_trades}")
-                    
+                                  f"Unrealized PNL: {unrealized_pnl_usdt:.4f} USDT ({unrealized_pnl_percent:.2f}%)\n"
+                                  f"Balance: {virtual_balance:.2f} USDT\n"
+                                  f"Total Trades: {total_trades}\n"
+                                  f"Net Profit: {overall_profit_loss + net_profit:.4f} USDT\n"
+                                  f"Open Trades: {open_trades}")
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message)
-                    last_alert_times[symbol] = current_time
                     del active_positions[symbol]
         except Exception as e:
-            error_msg = (f"Error checking {symbol}: {e}\n"
-                         f"Operation: Processing symbol in check_alerts\n"
-                         f"Stack Trace:\n{traceback.format_exc()}")
-            logger.error(error_msg)
+            logger.error(f"Error checking {symbol}: {e}\n{traceback.format_exc()}")
             failed_symbols[symbol] = failed_symbols.get(symbol, {'count': 0, 'last_attempt': datetime.now()})
             failed_symbols[symbol]['count'] += 1
             failed_symbols[symbol]['last_attempt'] = datetime.now()
@@ -572,10 +505,7 @@ async def run_alert_loop(application: Application):
         try:
             await check_alerts(bot)
         except Exception as e:
-            error_msg = (f"Error in run_alert_loop: {e}\n"
-                         f"Operation: Running alert loop\n"
-                         f"Stack Trace:\n{traceback.format_exc()}")
-            logger.error(error_msg)
+            logger.error(f"Error in alert loop: {e}\n{traceback.format_exc()}")
         await asyncio.sleep(300)
 
 async def main():
@@ -584,17 +514,11 @@ async def main():
         asyncio.create_task(run_alert_loop(application))
         await application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
-        error_msg = (f"Error in main: {e}\n"
-                     f"Operation: Initializing and running application\n"
-                     f"Stack Trace:\n{traceback.format_exc()}")
-        logger.error(error_msg)
+        logger.error(f"Error in main: {e}\n{traceback.format_exc()}")
 
 if __name__ == '__main__':
     nest_asyncio.apply()
     try:
         asyncio.run(main())
     except Exception as e:
-        error_msg = (f"Error in script execution: {e}\n"
-                     f"Operation: Starting asyncio event loop\n"
-                     f"Stack Trace:\n{traceback.format_exc()}")
-        logger.error(error_msg)
+        logger.error(f"Error in execution: {e}\n{traceback.format_exc()}")

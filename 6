@@ -39,10 +39,10 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-day_limit = 70
-interval = '8h'  # For trendline calculation
+day_limit = 100
+interval = '4h'  # For trendline calculation
 CHECK_INTERVAL = '4h'  # For price cross check
-PRIMARY_TRENDLINE_LENGTH = 10
+PRIMARY_TRENDLINE_LENGTH = 20
 SECONDARY_TRENDLINE_LENGTH = 10
 INITIAL_MAX_TRENDLINES = 1  # Initial limit per type
 MAX_STORED_TRENDLINES = 1  # Maximum total stored trendlines per type

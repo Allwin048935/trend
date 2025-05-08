@@ -98,7 +98,7 @@ def api_request(method, endpoint, params=None, body=None):
         if method == "GET":
             response = requests.get(url, headers=headers, params=params)
         elif method == "POST":
-            response = requests.post(url, headers=headers, params(params, data=json.dumps(body, separators=(',', ':')))) 
+            response = requests.post(url, headers=headers, params=params, data=json.dumps(body, separators=(',', ':')))
         elif method == "DELETE":
             response = requests.delete(url, headers=headers, params=params, data=json.dumps(body, separators=(',', ':')))
         response.raise_for_status()
@@ -312,6 +312,7 @@ def check_price_cross_trendlines(trendlines, df_15m):
     last_low = df_15m['Low'].iloc[-2]
     prev_low = df_15m['Low'].iloc[-3]
 
+
     last_timestamp = df_15m['timestamp'].iloc[-1]
     
     cross_over = False
@@ -339,11 +340,11 @@ def plot_candles(df, symbol, title):
         
         # Define market colors for candlesticks
         mc = mpf.make_marketcolors(
-            up='#2fc71e', down='#ed2f1a', edge='black', wick='black', volume='in', inherit=True
+            up='#2fc71e', down='#ed2f1a', edge='white', wick='white', volume='in', inherit=True
         )
         s = mpf.make_mpf_style(
-            base_mpl_style=['default'], marketcolors=mc, y_on_right=True,
-            facecolor='white', edgecolor='black', figcolor='white', gridcolor='lightgray', gridstyle='--'
+            base_mpl_style=['dark_background'], marketcolors=mc, y_on_right=True,
+            facecolor='black', edgecolor='white', figcolor='black', gridcolor='gray', gridstyle='--'
         )
         
         # Calculate trendlines
@@ -392,6 +393,7 @@ def plot_candles(df, symbol, title):
         # Add new price trendlines
         for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
+
             trend_series = trendline_to_series(df, tl)
             add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='-', width=1, panel=0))
         
@@ -408,7 +410,7 @@ def plot_candles(df, symbol, title):
             add_plots.append(
                 mpf.make_addplot(
                     fib_series,
-                    color='blue',
+                    color='cyan',
                     linestyle='-',
                     width=1,
                     panel=0,
@@ -419,7 +421,7 @@ def plot_candles(df, symbol, title):
         # Prepare RSI plot
         rsi = df_plot['RSI']
         rsi_plot = [
-            mpf.make_addplot(rsi, color='black', panel=1, ylabel='RSI'),
+            mpf.make_addplot(rsi, color='white', panel=1, ylabel='RSI'),
             mpf.make_addplot([70] * len(rsi), color='red', linestyle='--', alpha=0.5, panel=1),
             mpf.make_addplot([30] * len(rsi), color='green', linestyle='--', alpha=0.5, panel=1),
         ]
@@ -455,11 +457,11 @@ def plot_candles(df, symbol, title):
         )
         
         # Customize title
-        axlist[0].set_title(f"{symbol} - {title}", fontsize=25, style='italic', fontfamily='sans-serif', color='black')
+        axlist[0].set_title(f"{symbol} - {title}", fontsize=25, style='italic', fontfamily='sans-serif', color='white')
         
         # Save to buffer
         buf = BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', facecolor='white')
+        plt.savefig(buf, format='png', bbox_inches='tight', facecolor='black')
         buf.seek(0)
         plt.close(fig)
         return buf

@@ -445,13 +445,13 @@ def plot_candles(df, symbol, title):
             for tl in stored_trendlines[symbol]['price']['lines']:
                 color = '#cf0a83' if tl['slope'] < 0 else '#027521'
                 trend_series = trendline_to_series(df, tl)
-                add_plots.append(mpf.make_addplot(trend_series, color=color, width=1, panel=0))
+                add_plots.append(mpf.make_addplot(trend_series, color=color, width=1))
         
         # Add new price trendlines
         for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
             trend_series = trendline_to_series(df, tl)
-            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='-', width=1, panel=0))
+            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='-', width=1))
         
         # Calculate Fibonacci retracement levels
         high_price = df['High'].max()
@@ -469,7 +469,6 @@ def plot_candles(df, symbol, title):
                     color='cyan',
                     linestyle='-',
                     width=1,
-                    panel=0,
                     label=f'Fib {level:.3f}'
                 )
             )
@@ -483,7 +482,6 @@ def plot_candles(df, symbol, title):
             datetime_format='%H:%M',
             ylabel='Price ($)',
             addplot=add_plots,
-            panel_ratios=(3, 1),
             returnfig=True,
             tight_layout=True
         )

@@ -87,7 +87,7 @@ def api_request(method, endpoint, params=None, body=None):
         params = {}
     signature, timestamp = generate_signature(method, endpoint, params, body)
     params['timestamp'] = timestamp
-    url = f"| {BASE_URL}{endpoint}"
+    url = f"{BASE_URL}{endpoint}"  # Fixed: Removed erroneous "| " prefix
     headers = {
         "PIONEX-KEY": PIONEX_API_KEY,
         "PIONEX-SIGNATURE": signature,
@@ -457,7 +457,7 @@ def plot_candles(df, symbol, title, interval):
         high_price = df['High'].max()
         low_price = df['Low'].min()
         price_diff = high_price - low_price
-        fib_levels = [0.0, 0.236, 0.382, '0.5', 0.618, 0.786, 1.0]
+        fib_levels = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
         fib_prices = [high_price - (level * price_diff) for level in fib_levels]
         
         # Add Fibonacci levels as horizontal lines

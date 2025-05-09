@@ -86,7 +86,7 @@ def api_request(method, endpoint, params=None, body=None):
         params = {}
     signature, timestamp = generate_signature(method, endpoint, params, body)
     params['timestamp'] = timestamp
-    url = f"{BASE_URL}{endpoint}"  # Fixed: Removed erroneous "| " prefix
+    url = f"{BASE_URL}{endpoint}"  # Correct URL construction
     headers = {
         "PIONEX-KEY": PIONEX_API_KEY,
         "PIONEX-SIGNATURE": signature,
@@ -295,7 +295,7 @@ def fetch_data_with_pattern(symbol, interval, initial_limit=DAY_LIMIT):
         # Use trendln to calculate support and resistance trendlines
         try:
             (minimaIdxs, pmin, mintrend, minwindows), (maximaIdxs, pmax, maxtrend, maxwindows) = \
-                trendln.calc_support_resistance(df['Close'], method='numba')
+                trendln.calc_support_resistance(df['Close'], method=trendln.METHOD_NCUBED)
         except Exception as e:
             logger.error(f"trendln failed for {symbol} at interval {interval}: {e}")
             return None, None, None
@@ -403,7 +403,7 @@ def plot_candles(df, symbol, title, interval):
         
         # Calculate trendlines using trendln
         (minimaIdxs, pmin, mintrend, minwindows), (maximaIdxs, pmax, maxtrend, maxwindows) = \
-            trendln.calc_support_resistance(df['Close'], method='numba')
+            trendln.calc_support_resistance(df['Close'], method=trendln.METHOD_NCUBED)
         
         # Prepare additional plots for candlestick panel
         add_plots = []

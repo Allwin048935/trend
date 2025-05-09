@@ -60,7 +60,7 @@ binance = ccxt.binance({
 })
 
 # Store trendlines, active orders, and last alert times
-stored_trendlines = {}  # Format: {symbol: {'price': {'lines': [...], 'stored_time': datetime}}}
+stored_trendlines = {}  # Format: {symbol: {'price': {'lines': [...], 'stored_time': datetime, 'timeframe': str}}}
 active_orders = {}
 last_alert_times = {}  # Track last alert time per symbol
 
@@ -87,7 +87,7 @@ def api_request(method, endpoint, params=None, body=None):
         params = {}
     signature, timestamp = generate_signature(method, endpoint, params, body)
     params['timestamp'] = timestamp
-    url = f"{BASE_URL}{endpoint}"
+    url = f"| {BASE_URL}{endpoint}"
     headers = {
         "PIONEX-KEY": PIONEX_API_KEY,
         "PIONEX-SIGNATURE": signature,
@@ -281,7 +281,7 @@ def detect_pattern(df, high_trendlines, low_trendlines):
 def fetch_data_with_pattern(symbol, interval, initial_limit=DAY_LIMIT):
     """
     Fetches historical data, increasing limit until a clear pattern is detected.
-    Returns the DataFrame with the detected pattern or None if no pattern is found.
+    Returns the DataFrame, trendlines, and pattern (or None if no pattern).
     """
     limit = initial_limit
     max_attempts = 5  # Maximum attempts to avoid infinite loops
@@ -291,7 +291,7 @@ def fetch_data_with_pattern(symbol, interval, initial_limit=DAY_LIMIT):
         df = get_historical_data(symbol, interval, limit)
         if df.empty:
             logger.warning(f"No data fetched for {symbol} at interval {interval}")
-            return None
+            return None, None, None
 
         # Calculate trendlines
         price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
@@ -309,7 +309,7 @@ def fetch_data_with_pattern(symbol, interval, initial_limit=DAY_LIMIT):
         pattern = detect_pattern(df, all_high_trendlines, all_low_trendlines)
         if pattern:
             logger.info(f"Pattern {pattern} detected for {symbol} at interval {interval} with limit {limit}")
-            return df
+            return df, primary_high_trendlines + primary_low_trendlines, pattern
 
         # Increase limit and try again
         limit += 50
@@ -317,7 +317,7 @@ def fetch_data_with_pattern(symbol, interval, initial_limit=DAY_LIMIT):
         logger.info(f"No pattern detected for {symbol} at interval {interval}, increasing limit to {limit}")
 
     logger.warning(f"No clear pattern detected for {symbol} at interval {interval} after {max_attempts} attempts")
-    return df  # Return the last fetched data even if no pattern is detected
+    return df, None, None
 
 # Trendline Functions
 def find_pivot_points(series, length, left_length):
@@ -394,7 +394,7 @@ def check_price_cross_trendlines(trendlines, df_15m):
     
     return cross_over, cross_under
 
-def plot_candles(df, symbol, title):
+def plot_candles(df, symbol, title, interval):
     if df.empty or len(df) < 5:
         logger.warning(f"Not enough data to plot candles for {symbol}: {len(df)} rows")
         return None
@@ -457,7 +457,7 @@ def plot_candles(df, symbol, title):
         high_price = df['High'].max()
         low_price = df['Low'].min()
         price_diff = high_price - low_price
-        fib_levels = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+        fib_levels = [0.0, 0.236, 0.382, '0.5', 0.618, 0.786, 1.0]
         fib_prices = [high_price - (level * price_diff) for level in fib_levels]
         
         # Add Fibonacci levels as horizontal lines
@@ -486,8 +486,8 @@ def plot_candles(df, symbol, title):
             tight_layout=True
         )
         
-        # Customize title
-        axlist[0].set_title(f"{symbol} - {title}", fontsize=25, style='italic', fontfamily='sans-serif', color='white')
+        # Customize title with timeframe
+        axlist[0].set_title(f"{symbol} - {title} ({interval})", fontsize=25, style='italic', fontfamily='sans-serif', color='white')
         
         # Save to buffer
         buf = BytesIO()
@@ -597,15 +597,20 @@ async def check_alerts(bot: Bot):
             # Check all intervals for a pattern
             historical_data = None
             selected_interval = None
+            selected_trendlines = None
+            selected_pattern = None
+
             for interval in TIME_INTERVALS:
-                df = fetch_data_with_pattern(symbol, interval)
-                if df is not None:
+                df, trendlines, pattern = fetch_data_with_pattern(symbol, interval)
+                if pattern and df is not None and not df.empty:
                     historical_data = df
                     selected_interval = interval
-                    break
+                    selected_trendlines = trendlines
+                    selected_pattern = pattern
+                    break  # Stop at the first timeframe with a clear pattern
 
-            if historical_data is None or historical_data.empty:
-                logger.warning(f"No valid historical data fetched for {symbol}")
+            if historical_data is None or historical_data.empty or selected_interval is None:
+                logger.warning(f"No valid historical data or pattern found for {symbol} across all timeframes")
                 continue
 
             historical_data_15m = get_historical_data(symbol, CHECK_INTERVAL, limit=5)
@@ -616,7 +621,7 @@ async def check_alerts(bot: Bot):
             historical_data.name = symbol
             historical_data_15m.name = symbol
 
-            # Calculate new potential price trendlines
+            # Calculate new potential price trendlines for the selected timeframe
             price_high_pivots, price_low_pivots = find_pivot_points(historical_data['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
             price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(historical_data['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
             
@@ -626,7 +631,7 @@ async def check_alerts(bot: Bot):
             secondary_low_trendlines = calculate_trendlines(historical_data, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
             
             # Combine stored and new price trendlines for checking
-            current_stored = stored_trendlines.get(symbol, {'price': {'lines': [], 'stored_time': None}})
+            current_stored = stored_trendlines.get(symbol, {'price': {'lines': [], 'stored_time': None, 'timeframe': None}})
             all_price_trendlines = (current_stored['price']['lines'] + 
                                    primary_high_trendlines + primary_low_trendlines + 
                                    secondary_high_trendlines + secondary_low_trendlines)
@@ -634,29 +639,33 @@ async def check_alerts(bot: Bot):
             cross_over, cross_under = check_price_cross_trendlines(all_price_trendlines, historical_data_15m)
 
             if cross_over:
-                message = f"Buy #{symbol}"
+                message = f"Buy #{symbol} ({selected_interval}, Pattern: {selected_pattern})"
                 title = f'Buy {symbol}'
-                image_buffer = plot_candles(historical_data, symbol, title)
+                image_buffer = plot_candles(historical_data, symbol, title, selected_interval)
                 if image_buffer:
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
                                               historical_data_15m['Close'].iloc[-1])
                     last_alert_times[symbol] = current_time  # Update last alert time
-                    # Store new price trendlines
+                    # Store new price trendlines with timeframe
                     new_price_lines = primary_high_trendlines + primary_low_trendlines
                     updated_price_lines = current_stored['price']['lines'] + new_price_lines
                     if len(updated_price_lines) > MAX_STORED_TRENDLINES:
                         updated_price_lines = sorted(updated_price_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
                     
                     stored_trendlines[symbol] = {
-                        'price': {'lines': updated_price_lines, 'stored_time': current_time}
+                        'price': {
+                            'lines': updated_price_lines,
+                            'stored_time': current_time,
+                            'timeframe': selected_interval
+                        }
                     }
                 else:
                     logger.warning(f"Failed to generate chart for {symbol}")
             
             if cross_under and symbol in active_orders:
-                message = f"Sell #{symbol}"
-                title = f'sell {symbol}'
-                image_buffer = plot_candles(historical_data, symbol, title)
+                message = f"Sell #{symbol} ({selected_interval}, Pattern: {selected_pattern})"
+                title = f'Sell {symbol}'
+                image_buffer = plot_candles(historical_data, symbol, title, selected_interval)
                 if image_buffer:
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
                                               historical_data_15m['Close'].iloc[-1])

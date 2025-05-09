@@ -33,7 +33,7 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trading parameters
-CHECK_INTERVAL = '1d'
+CHECK_INTERVAL = '15m'
 RSI_PERIOD = 14
 RSI_EMA_PERIOD = 14
 TRADE_FEE_PERCENT = 0.1
@@ -263,19 +263,19 @@ def get_historical_data(symbol, interval, limit=500, retries=3, delay=2):
 def check_rsi_signals(df, symbol):
     if len(df) < 3:
         return False, False, False, False
-    curr_rsi = df['RSI'].iloc[-1]
-    last_rsi = df['RSI'].iloc[-2]
-    curr_rsi_ema = df['RSI_EMA'].iloc[-1]
-    last_rsi_ema = df['RSI_EMA'].iloc[-2]
+    curr_rsi = df['RSI'].iloc[-2]
+    last_rsi = df['RSI'].iloc[-3]
+    curr_rsi_ema = df['RSI_EMA'].iloc[-2]
+    last_rsi_ema = df['RSI_EMA'].iloc[-3]
     
     # Entry signals
-    cross_over = last_rsi <= last_rsi_ema and curr_rsi > curr_rsi_ema  # Long entry
-    cross_under = last_rsi >= last_rsi_ema and curr_rsi < curr_rsi_ema  # Short entry
+    cross_over = last_rsi <= 20 and curr_rsi > 20  # Long entry
+    cross_under = last_rsi >= 80 and curr_rsi < 80  # Short entry
     
     # Exit signals
     last_type = last_alert_types.get(symbol)
-    cross_over_exit = last_type == 'long' and curr_rsi < curr_rsi_ema  # Exit long
-    cross_under_exit = last_type == 'short' and curr_rsi > curr_rsi_ema  # Exit short
+    cross_over_exit = last_type == 'long' and curr_rsi < 20  # Exit long
+    cross_under_exit = last_type == 'short' and curr_rsi > 80  # Exit short
     
     return cross_over, cross_under, cross_over_exit, cross_under_exit
 
@@ -569,7 +569,7 @@ async def run_alert_loop(application: Application):
             await check_alerts(bot)
         except Exception as e:
             logger.error(f"Error in alert loop: {e}\n{traceback.format_exc()}")
-        await asyncio.sleep(3600)
+        await asyncio.sleep(300)
 
 async def main():
     try:

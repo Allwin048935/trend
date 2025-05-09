@@ -17,6 +17,8 @@ import hashlib
 from urllib.parse import urlencode
 import json
 import telegram.error
+import trendln  # Import trendln library for trendline calculations
+import numpy as np
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -41,10 +43,7 @@ logging.getLogger('ccxt').setLevel(logging.WARNING)
 DAY_LIMIT = 150
 CHECK_INTERVAL = '4h'  # For price cross check
 TIME_INTERVALS = ['4h', '8h', '12h', '1d']  # Intervals to check
-PRIMARY_TRENDLINE_LENGTH = 30
-SECONDARY_TRENDLINE_LENGTH = 20
-INITIAL_MAX_TRENDLINES = 2  # Initial limit per type
-MAX_STORED_TRENDLINES = 2  # Maximum total stored trendlines per type
+MAX_STORED_TRENDLINES = 2  # Maximum total stored trendlines
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
@@ -280,7 +279,7 @@ def detect_pattern(df, high_trendlines, low_trendlines):
 
 def fetch_data_with_pattern(symbol, interval, initial_limit=DAY_LIMIT):
     """
-    Fetches historical data, increasing limit until a clear pattern is detected.
+    Fetches historical data, increasing limit until a clear pattern is detected using trendln.
     Returns the DataFrame, trendlines, and pattern (or None if no pattern).
     """
     limit = initial_limit
@@ -293,23 +292,61 @@ def fetch_data_with_pattern(symbol, interval, initial_limit=DAY_LIMIT):
             logger.warning(f"No data fetched for {symbol} at interval {interval}")
             return None, None, None
 
-        # Calculate trendlines
-        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-        price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-        
-        primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
-        primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
-        secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
-        secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+        # Use trendln to calculate support and resistance trendlines
+        try:
+            (minimaIdxs, pmin, mintrend, minwindows), (maximaIdxs, pmax, maxtrend, maxwindows) = \
+                trendln.calc_support_resistance(df['Close'], method='numba')
+        except Exception as e:
+            logger.error(f"trendln failed for {symbol} at interval {interval}: {e}")
+            return None, None, None
 
-        all_high_trendlines = primary_high_trendlines + secondary_high_trendlines
-        all_low_trendlines = primary_low_trendlines + secondary_low_trendlines
+        # Convert trendln output to trendline format
+        high_trendlines = []
+        low_trendlines = []
+
+        # Process support lines (mintrend)
+        for trend in mintrend:
+            if len(trend) < 2:
+                continue
+            slope, intercept = trend[0]
+            idx_start, idx_end = trend[1]
+            x1 = df['timestamp'].iloc[idx_start]
+            x2 = df['timestamp'].iloc[idx_end]
+            y1 = slope * idx_start + intercept
+            y2 = slope * idx_end + intercept
+            time_diff = (x2 - x1).total_seconds() / 3600 if (x2 - x1).total_seconds() != 0 else 1
+            trend_slope = (y2 - y1) / time_diff
+            low_trendlines.append({
+                'x1': x1, 'y1': y1,
+                'x2': x2, 'y2': y2,
+                'slope': trend_slope,
+                'timestamp': x2
+            })
+
+        # Process resistance lines (maxtrend)
+        for trend in maxtrend:
+            if len(trend) < 2:
+                continue
+            slope, intercept = trend[0]
+            idx_start, idx_end = trend[1]
+            x1 = df['timestamp'].iloc[idx_start]
+            x2 = df['timestamp'].iloc[idx_end]
+            y1 = slope * idx_start + intercept
+            y2 = slope * idx_end + intercept
+            time_diff = (x2 - x1).total_seconds() / 3600 if (x2 - x1).total_seconds() != 0 else 1
+            trend_slope = (y2 - y1) / time_diff
+            high_trendlines.append({
+                'x1': x1, 'y1': y1,
+                'x2': x2, 'y2': y2,
+                'slope': trend_slope,
+                'timestamp': x2
+            })
 
         # Detect pattern
-        pattern = detect_pattern(df, all_high_trendlines, all_low_trendlines)
+        pattern = detect_pattern(df, high_trendlines, low_trendlines)
         if pattern:
             logger.info(f"Pattern {pattern} detected for {symbol} at interval {interval} with limit {limit}")
-            return df, primary_high_trendlines + primary_low_trendlines, pattern
+            return df, high_trendlines + low_trendlines, pattern
 
         # Increase limit and try again
         limit += 50
@@ -318,54 +355,6 @@ def fetch_data_with_pattern(symbol, interval, initial_limit=DAY_LIMIT):
 
     logger.warning(f"No clear pattern detected for {symbol} at interval {interval} after {max_attempts} attempts")
     return df, None, None
-
-# Trendline Functions
-def find_pivot_points(series, length, left_length):
-    pivots_high = pd.Series(index=series.index, dtype=float)
-    pivots_low = pd.Series(index=series.index, dtype=float)
-    
-    for i in range(left_length, len(series) - left_length):
-        window = series.iloc[i-left_length:i+left_length+1]
-        if not window.isna().any() and series.iloc[i] == window.max():
-            pivots_high.iloc[i] = series.iloc[i]
-        if not window.isna().any() and series.iloc[i] == window.min():
-            pivots_low.iloc[i] = series.iloc[i]
-    
-    return pivots_high, pivots_low
-
-def calculate_trendlines(df, pivots, length, extension_days=3, initial_max=INITIAL_MAX_TRENDLINES):
-    trendlines = []
-    pivot_points = pivots.dropna()
-    if len(pivot_points) < 2:
-        return trendlines
-    
-    timestamps = df['timestamp']
-    last_timestamp = timestamps.iloc[-1]
-    
-    for i in range(1, len(pivot_points)):
-        idx1 = pivot_points.index[i-1]
-        idx2 = pivot_points.index[i]
-        
-        x1 = timestamps.loc[idx1]
-        x2 = timestamps.loc[idx2]
-        y1 = pivot_points.iloc[i-1]
-        y2 = pivot_points.iloc[i]
-        
-        time_diff = (x2 - x1).total_seconds() / 3600
-        slope = (y2 - y1) / time_diff if time_diff != 0 else 0
-        
-        x_end = last_timestamp + pd.Timedelta(days=extension_days)
-        extension_time = (x_end - x2).total_seconds() / 3600
-        y_end = y2 + slope * extension_time
-        
-        trendlines.append({
-            'x1': x1, 'y1': y1,
-            'x2': x_end, 'y2': y_end,
-            'slope': slope,
-            'timestamp': x2
-        })
-    
-    return trendlines[:initial_max] if len(trendlines) > initial_max else trendlines
 
 def check_price_cross_trendlines(trendlines, df_15m):
     if len(df_15m) < 3 or not trendlines:
@@ -412,14 +401,9 @@ def plot_candles(df, symbol, title, interval):
             facecolor='black', edgecolor='white', figcolor='black', gridcolor='gray', gridstyle='--'
         )
         
-        # Calculate trendlines
-        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-        price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(df['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-        
-        primary_high_trendlines = calculate_trendlines(df, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
-        primary_low_trendlines = calculate_trendlines(df, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
-        secondary_high_trendlines = calculate_trendlines(df, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
-        secondary_low_trendlines = calculate_trendlines(df, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
+        # Calculate trendlines using trendln
+        (minimaIdxs, pmin, mintrend, minwindows), (maximaIdxs, pmax, maxtrend, maxwindows) = \
+            trendln.calc_support_resistance(df['Close'], method='numba')
         
         # Prepare additional plots for candlestick panel
         add_plots = []
@@ -447,8 +431,24 @@ def plot_candles(df, symbol, title, interval):
                 trend_series = trendline_to_series(df, tl)
                 add_plots.append(mpf.make_addplot(trend_series, color=color, width=1))
         
-        # Add new price trendlines
-        for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
+        # Add new trendlines from trendln
+        for trend in mintrend + maxtrend:
+            if len(trend) < 2:
+                continue
+            slope, intercept = trend[0]
+            idx_start, idx_end = trend[1]
+            x1 = df['timestamp'].iloc[idx_start]
+            x2 = df['timestamp'].iloc[idx_end]
+            y1 = slope * idx_start + intercept
+            y2 = slope * idx_end + intercept
+            time_diff = (x2 - x1).total_seconds() / 3600 if (x2 - x1).total_seconds() != 0 else 1
+            trend_slope = (y2 - y1) / time_diff
+            tl = {
+                'x1': x1, 'y1': y1,
+                'x2': x2, 'y2': y2,
+                'slope': trend_slope,
+                'timestamp': x2
+            }
             color = 'red' if tl['slope'] < 0 else 'green'
             trend_series = trendline_to_series(df, tl)
             add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='-', width=1))
@@ -621,20 +621,9 @@ async def check_alerts(bot: Bot):
             historical_data.name = symbol
             historical_data_15m.name = symbol
 
-            # Calculate new potential price trendlines for the selected timeframe
-            price_high_pivots, price_low_pivots = find_pivot_points(historical_data['Close'], PRIMARY_TRENDLINE_LENGTH, PRIMARY_TRENDLINE_LENGTH//2)
-            price_sec_high_pivots, price_sec_low_pivots = find_pivot_points(historical_data['Close'], SECONDARY_TRENDLINE_LENGTH, SECONDARY_TRENDLINE_LENGTH//2)
-            
-            primary_high_trendlines = calculate_trendlines(historical_data, price_high_pivots, PRIMARY_TRENDLINE_LENGTH)
-            primary_low_trendlines = calculate_trendlines(historical_data, price_low_pivots, PRIMARY_TRENDLINE_LENGTH)
-            secondary_high_trendlines = calculate_trendlines(historical_data, price_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
-            secondary_low_trendlines = calculate_trendlines(historical_data, price_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
-            
             # Combine stored and new price trendlines for checking
             current_stored = stored_trendlines.get(symbol, {'price': {'lines': [], 'stored_time': None, 'timeframe': None}})
-            all_price_trendlines = (current_stored['price']['lines'] + 
-                                   primary_high_trendlines + primary_low_trendlines + 
-                                   secondary_high_trendlines + secondary_low_trendlines)
+            all_price_trendlines = current_stored['price']['lines'] + selected_trendlines
 
             cross_over, cross_under = check_price_cross_trendlines(all_price_trendlines, historical_data_15m)
 
@@ -647,8 +636,7 @@ async def check_alerts(bot: Bot):
                                               historical_data_15m['Close'].iloc[-1])
                     last_alert_times[symbol] = current_time  # Update last alert time
                     # Store new price trendlines with timeframe
-                    new_price_lines = primary_high_trendlines + primary_low_trendlines
-                    updated_price_lines = current_stored['price']['lines'] + new_price_lines
+                    updated_price_lines = current_stored['price']['lines'] + selected_trendlines
                     if len(updated_price_lines) > MAX_STORED_TRENDLINES:
                         updated_price_lines = sorted(updated_price_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
                     

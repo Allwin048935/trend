@@ -412,7 +412,7 @@ def plot_candles(df, symbol, title):
                     fib_series,
                     color='cyan',
                     linestyle='-',
-                    width=1,
+                    width=0.5,
                     panel=0,
                     label=f'Fib {level:.3f}'
                 )
@@ -560,7 +560,7 @@ async def check_alerts(bot: Bot):
             # Check cooldown
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 1 * 900:  # 2-hour cooldown
+            if last_alert and (current_time - last_alert).total_seconds() < 4 * 3600:  # 2-hour cooldown
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
 

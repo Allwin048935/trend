@@ -60,10 +60,10 @@ binance = ccxt.binance({
     'options': {'defaultType': 'future'}
 })
 
-# Store trendlines, active orders, and last alert times
-stored_trendlines = {}  # Format: {symbol: {'price': {'lines': [...], 'stored_time': datetime}, 'rsi': {...}}}
+# Store trendlines, active orders, and last alert types
+stored_trendlines = {}  # Format: {symbol: {'price': {'lines': [...], 'last_alert': str, 'stored_time': datetime}, 'rsi': {...}}}
 active_orders = {}
-last_alert_times = {}  # Track last alert time per symbol
+last_alert_types = {}  # Track last alert type per symbol ('buy', 'sell', or None)
 
 # Pionex API Functions
 def generate_signature(method, path, params, body=None):
@@ -312,7 +312,6 @@ def check_price_cross_trendlines(trendlines, df_15m):
     last_low = df_15m['Low'].iloc[-2]
     prev_low = df_15m['Low'].iloc[-3]
 
-
     last_timestamp = df_15m['timestamp'].iloc[-1]
     
     cross_over = False
@@ -393,7 +392,6 @@ def plot_candles(df, symbol, title):
         # Add new price trendlines
         for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
-
             trend_series = trendline_to_series(df, tl)
             add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='-', width=1, panel=0))
         
@@ -557,13 +555,6 @@ async def check_alerts(bot: Bot):
     
     for symbol in SELECTED_SYMBOLS:
         try:
-            # Check cooldown
-            current_time = datetime.now()
-            last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 4 * 3600:  # 2-hour cooldown
-                logger.info(f"Cooldown active for {symbol}, skipping alert")
-                continue
-
             historical_data_8h = get_historical_data(symbol, interval, limit=day_limit)
             if historical_data_8h.empty:
                 logger.warning(f"No 8h historical data fetched for {symbol}")
@@ -596,21 +587,29 @@ async def check_alerts(bot: Bot):
             rsi_secondary_low_trendlines = calculate_trendlines(historical_data_8h, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
             
             # Combine stored and new price trendlines for checking
-            current_stored = stored_trendlines.get(symbol, {'price': {'lines': [], 'stored_time': None}, 'rsi': {'lines': [], 'stored_time': None}})
+            current_stored = stored_trendlines.get(symbol, {
+                'price': {'lines': [], 'last_alert': None, 'stored_time': None},
+                'rsi': {'lines': [], 'last_alert': None, 'stored_time': None}
+            })
             all_price_trendlines = (current_stored['price']['lines'] + 
                                    primary_high_trendlines + primary_low_trendlines + 
                                    secondary_high_trendlines + secondary_low_trendlines)
 
             cross_over, cross_under = check_price_cross_trendlines(all_price_trendlines, historical_data_15m)
 
-            if cross_over:
+            current_time = datetime.now()
+            last_alert_type = current_stored['price'].get('last_alert')
+
+            # Handle cross-over (buy signal)
+            if cross_over and last_alert_type != 'buy':
                 message = f"Buy #{symbol}"
                 title = f'Buy {symbol}'
                 image_buffer = plot_candles(historical_data_8h, symbol, title)
                 if image_buffer:
                     await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
                                               historical_data_15m['Close'].iloc[-1])
-                    last_alert_times[symbol] = current_time  # Update last alert time
+                    # Update last alert type to 'buy'
+                    current_stored['price']['last_alert'] = 'buy'
                     # Store new price trendlines
                     new_price_lines = primary_high_trendlines + primary_low_trendlines
                     updated_price_lines = current_stored['price']['lines'] + new_price_lines
@@ -624,33 +623,55 @@ async def check_alerts(bot: Bot):
                         updated_rsi_lines = sorted(updated_rsi_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
                     
                     stored_trendlines[symbol] = {
-                        'price': {'lines': updated_price_lines, 'stored_time': current_time},
-                        'rsi': {'lines': updated_rsi_lines, 'stored_time': current_time}
+                        'price': {'lines': updated_price_lines, 'last_alert': 'buy', 'stored_time': current_time},
+                        'rsi': {'lines': updated_rsi_lines, 'last_alert': current_stored['rsi'].get('last_alert'), 'stored_time': current_time}
                     }
                 else:
                     logger.warning(f"Failed to generate chart for {symbol}")
             
-            if cross_under and symbol in active_orders:
-                message = f"Sell #{symbol}"
-                title = f'sell {symbol}'
-                image_buffer = plot_candles(historical_data_8h, symbol, title)
-                if image_buffer:
-                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
-                                              historical_data_15m['Close'].iloc[-1])
-                    last_alert_times[symbol] = current_time  # Update last alert time
-                
-                order_info = active_orders[symbol]
-                if order_info['side'] == 'BUY':
-                    if cancel_order(symbol, order_info['order_id']):
-                        sell_order_id, _ = place_market_order(symbol, "SELL", quantity=order_info['quantity'])
-                        if sell_order_id:
-                            del active_orders[symbol]
-                            await bot.send_message(chat_id=config.CHAT_ID, 
-                                                 text=f"Position #closed with SELL for {symbol} due to price cross under trendline")
+            # Handle cross-under (sell signal or state change)
+            if cross_under:
+                if last_alert_type == 'buy':
+                    # Update last alert type to 'sell' silently
+                    current_stored['price']['last_alert'] = 'sell'
+                    stored_trendlines[symbol] = {
+                        'price': {
+                            'lines': current_stored['price']['lines'],
+                            'last_alert': 'sell',
+                            'stored_time': current_stored['price']['stored_time']
+                        },
+                        'rsi': current_stored['rsi']
+                    }
+                elif symbol in active_orders:
+                    message = f"Sell #{symbol}"
+                    title = f'Sell {symbol}'
+                    image_buffer = plot_candles(historical_data_8h, symbol, title)
+                    if image_buffer:
+                        await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
+                                                  historical_data_15m['Close'].iloc[-1])
+                        # Update last alert type to 'sell'
+                        current_stored['price']['last_alert'] = 'sell'
+                        stored_trendlines[symbol] = {
+                            'price': {
+                                'lines': current_stored['price']['lines'],
+                                'last_alert': 'sell',
+                                'stored_time': current_stored['price']['stored_time']
+                            },
+                            'rsi': current_stored['rsi']
+                        }
+                    
+                    order_info = active_orders[symbol]
+                    if order_info['side'] == 'BUY':
+                        if cancel_order(symbol, order_info['order_id']):
+                            sell_order_id, _ = place_market_order(symbol, "SELL", quantity=order_info['quantity'])
+                            if sell_order_id:
+                                del active_orders[symbol]
+                                await bot.send_message(chat_id=config.CHAT_ID, 
+                                                     text=f"Position #closed with SELL for {symbol} due to price cross under trendline")
+                            else:
+                                logger.error(f"Failed to place market SELL for {symbol}")
                         else:
-                            logger.error(f"Failed to place market SELL for {symbol}")
-                    else:
-                        logger.error(f"Failed to cancel SELL order for {symbol}")
+                            logger.error(f"Failed to cancel SELL order for {symbol}")
         except Exception as e:
             logger.error(f"Error checking {symbol}: {e}")
 

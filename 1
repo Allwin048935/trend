@@ -28,7 +28,7 @@ file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)  # Changed to INFO for debugging
+console_handler.setLevel(logging.WARNING)
 console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 logger.handlers.clear()
@@ -43,11 +43,9 @@ day_limit = 250
 interval = '12h'  # For trendline calculation
 CHECK_INTERVAL = '4h'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 30
-SECONDARY_TRENDLINE_LENGTH = 20
+SECONDARY_TRENDLINE_LENGTH = 30
 INITIAL_MAX_TRENDLINES = 2  # Initial limit per type
 MAX_STORED_TRENDLINES = 2  # Maximum total stored trendlines per type
-COOLDOWN_SECONDS = 4 * 3600  # 4-hour cooldown
-TRENDLINE_EXPIRY_DAYS = 7  # Expire trendlines older than 7 days
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"
@@ -66,7 +64,6 @@ binance = ccxt.binance({
 stored_trendlines = {}  # Format: {symbol: {'price': {'lines': [...], 'stored_time': datetime}, 'rsi': {...}}}
 active_orders = {}
 last_alert_times = {}  # Track last alert time per symbol
-last_cross_events = {}  # Track last cross event to avoid duplicates
 
 # Pionex API Functions
 def generate_signature(method, path, params, body=None):
@@ -315,6 +312,7 @@ def check_price_cross_trendlines(trendlines, df_15m):
     last_low = df_15m['Low'].iloc[-2]
     prev_low = df_15m['Low'].iloc[-3]
 
+
     last_timestamp = df_15m['timestamp'].iloc[-1]
     
     cross_over = False
@@ -395,6 +393,7 @@ def plot_candles(df, symbol, title):
         # Add new price trendlines
         for tl in primary_high_trendlines + primary_low_trendlines + secondary_high_trendlines + secondary_low_trendlines:
             color = 'red' if tl['slope'] < 0 else 'green'
+
             trend_series = trendline_to_series(df, tl)
             add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='-', width=1, panel=0))
         
@@ -474,7 +473,7 @@ def plot_candles(df, symbol, title):
 async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer, close_price):
     if image_buffer is None:
         logger.warning(f"No image buffer for {symbol}, skipping message")
-        return False
+        return
     
     try:
         await bot.send_photo(chat_id=chat_id, photo=image_buffer)
@@ -482,10 +481,8 @@ async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: st
         reply_markup = InlineKeyboardMarkup(keyboard)
         await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
         logger.info(f"Sent alert for {symbol}: {message}")
-        return True
     except Exception as e:
         logger.error(f"Failed to send Telegram message for {symbol}: {e}")
-        return False
 
 async def handle_telegram_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -563,10 +560,9 @@ async def check_alerts(bot: Bot):
             # Check cooldown
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < COOLDOWN_SECONDS:
-                logger.info(f"Cooldown active for {symbol}: {(COOLDOWN_SECONDS - (current_time - last_alert).total_seconds()) / 3600:.2f} hours remaining")
+            if last_alert and (current_time - last_alert).total_seconds() < 4 * 3600:  # 2-hour cooldown
+                logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
-            logger.info(f"No cooldown for {symbol}, proceeding with alert check")
 
             historical_data_8h = get_historical_data(symbol, interval, limit=day_limit)
             if historical_data_8h.empty:
@@ -599,65 +595,49 @@ async def check_alerts(bot: Bot):
             rsi_secondary_high_trendlines = calculate_trendlines(historical_data_8h, rsi_sec_high_pivots, SECONDARY_TRENDLINE_LENGTH)
             rsi_secondary_low_trendlines = calculate_trendlines(historical_data_8h, rsi_sec_low_pivots, SECONDARY_TRENDLINE_LENGTH)
             
-            # Clean up expired trendlines
-            current_stored = stored_trendlines.get(symbol, {'price': {'lines': [], 'stored_time': None}, 'rsi': {'lines': [], 'stored_time': None}})
-            current_stored['price']['lines'] = [
-                tl for tl in current_stored['price']['lines']
-                if (current_time - tl['timestamp']).days < TRENDLINE_EXPIRY_DAYS
-            ]
-            current_stored['rsi']['lines'] = [
-                tl for tl in current_stored['rsi']['lines']
-                if (current_time - tl['timestamp']).days < TRENDLINE_EXPIRY_DAYS
-            ]
-
             # Combine stored and new price trendlines for checking
+            current_stored = stored_trendlines.get(symbol, {'price': {'lines': [], 'stored_time': None}, 'rsi': {'lines': [], 'stored_time': None}})
             all_price_trendlines = (current_stored['price']['lines'] + 
                                    primary_high_trendlines + primary_low_trendlines + 
                                    secondary_high_trendlines + secondary_low_trendlines)
 
             cross_over, cross_under = check_price_cross_trendlines(all_price_trendlines, historical_data_15m)
 
-            # Check for duplicate cross events
-            last_cross = last_cross_events.get(symbol, {'type': None, 'time': None})
-            if cross_over and (last_cross['type'] != 'over' or (current_time - last_cross['time']).total_seconds() > 300):
+            if cross_over:
                 message = f"Buy #{symbol}"
                 title = f'Buy {symbol}'
                 image_buffer = plot_candles(historical_data_8h, symbol, title)
                 if image_buffer:
-                    success = await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
-                                                        historical_data_15m['Close'].iloc[-1])
-                    if success:
-                        last_alert_times[symbol] = current_time  # Update last alert time
-                        last_cross_events[symbol] = {'type': 'over', 'time': current_time}
-                        # Store new price trendlines
-                        new_price_lines = primary_high_trendlines + primary_low_trendlines
-                        updated_price_lines = current_stored['price']['lines'] + new_price_lines
-                        if len(updated_price_lines) > MAX_STORED_TRENDLINES:
-                            updated_price_lines = sorted(updated_price_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
-                        
-                        # Store new RSI trendlines
-                        new_rsi_lines = rsi_primary_high_trendlines + rsi_primary_low_trendlines
-                        updated_rsi_lines = current_stored['rsi']['lines'] + new_rsi_lines
-                        if len(updated_rsi_lines) > MAX_STORED_TRENDLINES:
-                            updated_rsi_lines = sorted(updated_rsi_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
-                        
-                        stored_trendlines[symbol] = {
-                            'price': {'lines': updated_price_lines, 'stored_time': current_time},
-                            'rsi': {'lines': updated_rsi_lines, 'stored_time': current_time}
-                        }
+                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
+                                              historical_data_15m['Close'].iloc[-1])
+                    last_alert_times[symbol] = current_time  # Update last alert time
+                    # Store new price trendlines
+                    new_price_lines = primary_high_trendlines + primary_low_trendlines
+                    updated_price_lines = current_stored['price']['lines'] + new_price_lines
+                    if len(updated_price_lines) > MAX_STORED_TRENDLINES:
+                        updated_price_lines = sorted(updated_price_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
+                    
+                    # Store new RSI trendlines
+                    new_rsi_lines = rsi_primary_high_trendlines + rsi_primary_low_trendlines
+                    updated_rsi_lines = current_stored['rsi']['lines'] + new_rsi_lines
+                    if len(updated_rsi_lines) > MAX_STORED_TRENDLINES:
+                        updated_rsi_lines = sorted(updated_rsi_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES:]
+                    
+                    stored_trendlines[symbol] = {
+                        'price': {'lines': updated_price_lines, 'stored_time': current_time},
+                        'rsi': {'lines': updated_rsi_lines, 'stored_time': current_time}
+                    }
                 else:
                     logger.warning(f"Failed to generate chart for {symbol}")
             
-            if cross_under and symbol in active_orders and (last_cross['type'] != 'under' or (current_time - last_cross['time']).total_seconds() > 300):
+            if cross_under and symbol in active_orders:
                 message = f"Sell #{symbol}"
-                title = f'Sell {symbol}'
+                title = f'sell {symbol}'
                 image_buffer = plot_candles(historical_data_8h, symbol, title)
                 if image_buffer:
-                    success = await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
-                                                        historical_data_15m['Close'].iloc[-1])
-                    if success:
-                        last_alert_times[symbol] = current_time  # Update last alert time
-                        last_cross_events[symbol] = {'type': 'under', 'time': current_time}
+                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
+                                              historical_data_15m['Close'].iloc[-1])
+                    last_alert_times[symbol] = current_time  # Update last alert time
                 
                 order_info = active_orders[symbol]
                 if order_info['side'] == 'BUY':

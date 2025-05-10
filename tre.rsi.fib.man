@@ -47,7 +47,7 @@ SECONDARY_TRENDLINE_LENGTH = 20
 INITIAL_MAX_TRENDLINES = 2  # Initial limit per type
 MAX_STORED_TRENDLINES = 2  # Maximum total stored trendlines per type
 COOLDOWN_SECONDS = 4 * 3600  # 4-hour cooldown
-TRENDLINE_EXPIRY_DAYS = 7  # Expire trendlines older than 7 days
+TRENDLINE_EXPIRY_DAYS = 30  # Expire trendlines older than 7 days
 
 # Pionex API setup
 BASE_URL = "https://api.pionex.com"

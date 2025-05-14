@@ -9,7 +9,10 @@ import nest_asyncio
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes
 import config  # Import the config module
-import ta  # Import ta library
+try:
+    import pandas_ta as ta  # Import pandas-ta library
+except ImportError:
+    ta = None  # Set to None if pandas-ta is not installed
 import logging
 from datetime import datetime, timedelta
 import time
@@ -246,8 +249,12 @@ def get_historical_data(symbol, interval, limit=150):
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
-        # Calculate RSI
-        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
+        # Calculate RSI (requires pandas-ta)
+        if ta is not None:
+            df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
+        else:
+            logger.warning(f"pandas-ta not installed, skipping RSI calculation for {symbol}")
+            df['RSI'] = pd.Series(np.nan, index=df.index)  # Placeholder for RSI
         return df
     except ccxt.ExchangeError as e:
         logger.error(f"Binance fetch error for {symbol}: {e}")
@@ -278,34 +285,43 @@ def calculate_slope(df, length, method, mult):
     """
     src = df['Close']
     n = pd.Series(range(len(df)), index=df.index)
+    symbol = df.name if hasattr(df, 'name') else 'Unknown'
     
     if method == 'Atr':
-        try:
-            # Attempt to use pandas-ta's ATR
-            atr = ta.volatility.atr(high=df['High'], low=df['Low'], close=df['Close'], length=length)
-            slope = atr / length * mult
-            logger.debug(f"ATR slope for {df.name}: {slope.iloc[-1]}")
-            return slope.iloc[-1] if not slope.empty else 0.0
-        except AttributeError:
-            # Fallback manual ATR calculation
-            logger.warning(f"ta.volatility.atr not found for {df.name}, using manual ATR calculation")
+        if ta is not None:
             try:
-                high_low = df['High'] - df['Low']
-                high_close = np.abs(df['High'] - df['Close'].shift(1))
-                low_close = np.abs(df['Low'] - df['Close'].shift(1))
-                true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-                true_range = true_range.fillna(method='ffill')  # Handle initial NaN
-                atr = true_range.rolling(window=length, min_periods=length).mean()
+                # Attempt to use pandas-ta's ATR
+                atr = ta.volatility.atr(high=df['High'], low=df['Low'], close=df['Close'], length=length)
                 slope = atr / length * mult
-                logger.debug(f"Manual ATR slope for {df.name}: {slope.iloc[-1] if not slope.empty else 0.0}")
+                logger.debug(f"ATR slope for {symbol}: {slope.iloc[-1] if not slope.empty else 0.0}")
                 return slope.iloc[-1] if not slope.empty else 0.0
-            except Exception as e:
-                logger.error(f"Manual ATR calculation failed for {df.name}: {e}")
-                return 0.0
+            except (AttributeError, Exception) as e:
+                logger.warning(f"ta.volatility.atr failed for {symbol}: {e}, using manual ATR calculation")
+        else:
+            logger.warning(f"pandas-ta not installed for {symbol}, using manual ATR calculation")
+        
+        # Manual ATR calculation
+        try:
+            high_low = df['High'] - df['Low']
+            high_close = np.abs(df['High'] - df['Close'].shift(1))
+            low_close = np.abs(df['Low'] - df['Close'].shift(1))
+            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            true_range = true_range.fillna(method='ffill').fillna(method='bfill')  # Handle NaNs
+            atr = true_range.rolling(window=length, min_periods=length).mean()
+            slope = atr / length * mult
+            logger.debug(f"Manual ATR slope for {symbol}: {slope.iloc[-1] if not slope.empty else 0.0}")
+            return slope.iloc[-1] if not slope.empty else 0.0
+        except Exception as e:
+            logger.error(f"Manual ATR calculation failed for {symbol}: {e}")
+            return 0.0
     elif method == 'Stdev':
-        slope = src.rolling(length).std() / length * mult
-        logger.debug(f"Stdev slope for {df.name}: {slope.iloc[-1] if not slope.empty else 0.0}")
-        return slope.iloc[-1] if not slope.empty else 0.0
+        try:
+            slope = src.rolling(length).std() / length * mult
+            logger.debug(f"Stdev slope for {symbol}: {slope.iloc[-1] if not slope.empty else 0.0}")
+            return slope.iloc[-1] if not slope.empty else 0.0
+        except Exception as e:
+            logger.error(f"Stdev slope calculation failed for {symbol}: {e}")
+            return 0.0
     elif method == 'Linreg':
         try:
             sma_src_n = (src * n).rolling(length).mean()
@@ -313,11 +329,12 @@ def calculate_slope(df, length, method, mult):
             sma_n = n.rolling(length).mean()
             var_n = n.rolling(length).var()
             slope = abs(sma_src_n - sma_src * sma_n) / var_n / 2 * mult if var_n.iloc[-1] != 0 else 0.0
-            logger.debug(f"Linreg slope for {df.name}: {slope.iloc[-1] if not slope.empty else 0.0}")
+            logger.debug(f"Linreg slope for {symbol}: {slope.iloc[-1] if not slope.empty else 0.0}")
             return slope.iloc[-1] if not slope.empty else 0.0
         except Exception as e:
-            logger.error(f"Linreg slope calculation failed for {df.name}: {e}")
+            logger.error(f"Linreg slope calculation failed for {symbol}: {e}")
             return 0.0
+    logger.error(f"Invalid slope method for {symbol}: {method}")
     return 0.0
 
 def calculate_trendlines(df, pivots_high, pivots_low, length, method='Atr', mult=1.0, extension_days=3):

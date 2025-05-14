@@ -47,7 +47,7 @@ interval = '5m'  # For trendline calculation
 CHECK_INTERVAL = '5m'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 14  # Matches LuxAlgo's default length
 MULT = 1.0  # Slope multiplier from LuxAlgo
-CALC_METHOD = 'Atr'  # Options: 'Atr', 'Stdev', 'Linreg'
+CALC_METHOD = 'Stdev'  # Options: 'Atr', 'Stdev', 'Linreg'
 MAX_STORED_TRENDLINES = 9  # Maximum total stored trendlines
 
 # Pionex API setup

@@ -18,6 +18,7 @@ import hashlib
 from urllib.parse import urlencode
 import json
 import telegram.error
+import numpy as np  # Added for manual ATR calculation
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -279,8 +280,21 @@ def calculate_slope(df, length, method, mult):
     n = pd.Series(range(len(df)), index=df.index)
     
     if method == 'Atr':
-        slope = ta.trend.atr(length, high=df['High'], low=df['Low'], close=df['Close']) / length * mult
-        return slope.iloc[-1] if not slope.empty else 0.0
+        try:
+            # Attempt to use pandas-ta's ATR
+            atr = ta.volatility.atr(high=df['High'], low=df['Low'], close=df['Close'], length=length)
+            slope = atr / length * mult
+            return slope.iloc[-1] if not slope.empty else 0.0
+        except AttributeError:
+            # Fallback manual ATR calculation
+            logger.warning("ta.volatility.atr not found, using manual ATR calculation")
+            high_low = df['High'] - df['Low']
+            high_close = np.abs(df['High'] - df['Close'].shift(1))
+            low_close = np.abs(df['Low'] - df['Close'].shift(1))
+            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            atr = true_range.rolling(window=length).mean()
+            slope = atr / length * mult
+            return slope.iloc[-1] if not slope.empty else 0.0
     elif method == 'Stdev':
         slope = src.rolling(length).std() / length * mult
         return slope.iloc[-1] if not slope.empty else 0.0

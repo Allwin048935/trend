@@ -155,6 +155,528 @@ def get_account_balance(symbol):
     return 0.0
 
 def place_market_order(symbol, side, amount_usdt=13.0, quantity=None):
-    endpoint = "/api/v1/tr...
+    endpoint = "/api/v1/trade/order"
+    params = {}
+    symbol_info = get_symbol_info(symbol)
+    if not symbol_info:
+        return None, None
+    pionex_symbol = symbol.replace("USDT", "_USDT")
+    best_bid, best_ask = get_current_price(symbol)
+    if not best_bid or not best_ask:
+        return None, None
+    quote_precision = int(symbol_info['quotePrecision'])
+    base_precision = int(symbol_info['basePrecision'])
+    min_amount = float(symbol_info['minAmount'])
+    amount_usdt = max(amount_usdt, min_amount)
+    body = {
+        "symbol": pionex_symbol,
+        "side": side.upper(),
+        "type": "MARKET",
+    }
+    if side.upper() == "BUY":
+        body["amount"] = f"{amount_usdt:.{quote_precision}f}"
+        buy_quantity = amount_usdt / best_bid
+        buy_quantity = f"{buy_quantity:.{base_precision}f}"
+    else:
+        if quantity is None:
+            quantity = amount_usdt / best_bid
+        body["size"] = f"{quantity:.{base_precision}f}"
+        buy_quantity = None
 
-Something went wrong, please refresh to reconnect or try again.
+    response = api_request("POST", endpoint, params, body)
+    if response and 'data' in response and response['result']:
+        return response['data']['orderId'], buy_quantity if side.upper() == "BUY" else None
+    logger.error(f"Market {side} order failed for {pionex_symbol}: {response}")
+    return None, None
+
+def place_limit_order(symbol, side, quantity, price):
+    endpoint = "/api/v1/trade/order"
+    params = {}
+    symbol_info = get_symbol_info(symbol)
+    if not symbol_info:
+        return None
+    pionex_symbol = symbol.replace("USDT", "_USDT")
+    quote_precision = int(symbol_info['quotePrecision'])
+    base_precision = int(symbol_info['basePrecision'])
+    price = float(f"{price:.{quote_precision}f}")
+    body = {
+        "symbol": pionex_symbol,
+        "side": side.upper(),
+        "type": "LIMIT",
+        "size": f"{quantity:.{base_precision}f}",
+        "price": f"{price:.{quote_precision}f}",
+        "IOC": False
+    }
+    response = api_request("POST", endpoint, params, body)
+    if response and 'data' in response and response['result']:
+        return response['data']['orderId']
+    logger.error(f"Limit {side} order failed for {pionex_symbol}: {response}")
+    return None
+
+def cancel_order(symbol, order_id):
+    endpoint = "/api/v1/trade/order"
+    pionex_symbol = symbol.replace("USDT", "_USDT")
+    params = {}
+    body = {
+        "symbol": pionex_symbol,
+        "orderId": order_id
+    }
+    response = api_request("DELETE", endpoint, params, body)
+    if response and 'result' in response and response['result']:
+        return True
+    logger.error(f"Cancel order failed for {pionex_symbol} order {order_id}: {response}")
+    return False
+
+def get_current_price(symbol):
+    endpoint = "/api/v1/market/depth"
+    pionex_symbol = symbol.replace("USDT", "_USDT")
+    params = {"symbol": pionex_symbol}
+    data = api_request("GET", endpoint, params)
+    if data and 'data' in data and 'bids' in data['data'] and 'asks' in data['data']:
+        best_bid = float(data['data']['bids'][0][0])
+        best_ask = float(data['data']['asks'][0][0])
+        return best_bid, best_ask
+    logger.error(f"Failed to fetch price for {pionex_symbol}")
+    return None, None
+
+# Binance Data Functions
+def get_historical_data(symbol, interval, limit=150):
+    try:
+        ohlcv = binance.fetch_ohlcv(symbol, interval, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.columns = ['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
+        # Calculate RSI
+        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
+        return df
+    except ccxt.ExchangeError as e:
+        logger.error(f"Binance fetch error for {symbol}: {e}")
+        return pd.DataFrame()
+
+# Trendline Functions
+def find_pivot_points(series, length):
+    """
+    Identify pivot highs and lows similar to Pine Script's ta.pivothigh/ta.pivotlow.
+    Uses a symmetric lookback period.
+    """
+    pivots_high = pd.Series(index=series.index, dtype=float)
+    pivots_low = pd.Series(index=series.index, dtype=float)
+    
+    for i in range(length, len(series) - length):
+        window = series.iloc[i-length:i+length+1]
+        if not window.isna().any() and series.iloc[i] == window.max():
+            pivots_high.iloc[i] = series.iloc[i]
+        if not window.isna().any() and series.iloc[i] == window.min():
+            pivots_low.iloc[i] = series.iloc[i]
+    
+    return pivots_high, pivots_low
+
+def calculate_slope(df, length, method, mult):
+    """
+    Calculate slope based on the specified method (Atr, Stdev, Linreg).
+    Matches LuxAlgo's slope calculation.
+    """
+    src = df['Close']
+    n = pd.Series(range(len(df)), index=df.index)
+    
+    if method == 'Atr':
+        try:
+            # Attempt to use pandas-ta's ATR
+            atr = ta.volatility.atr(high=df['High'], low=df['Low'], close=df['Close'], length=length)
+            slope = atr / length * mult
+            logger.debug(f"ATR slope for {df.name}: {slope.iloc[-1]}")
+            return slope.iloc[-1] if not slope.empty else 0.0
+        except AttributeError:
+            # Fallback manual ATR calculation
+            logger.warning(f"ta.volatility.atr not found for {df.name}, using manual ATR calculation")
+            try:
+                high_low = df['High'] - df['Low']
+                high_close = np.abs(df['High'] - df['Close'].shift(1))
+                low_close = np.abs(df['Low'] - df['Close'].shift(1))
+                true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+                true_range = true_range.fillna(method='ffill')  # Handle initial NaN
+                atr = true_range.rolling(window=length, min_periods=length).mean()
+                slope = atr / length * mult
+                logger.debug(f"Manual ATR slope for {df.name}: {slope.iloc[-1] if not slope.empty else 0.0}")
+                return slope.iloc[-1] if not slope.empty else 0.0
+            except Exception as e:
+                logger.error(f"Manual ATR calculation failed for {df.name}: {e}")
+                return 0.0
+    elif method == 'Stdev':
+        slope = src.rolling(length).std() / length * mult
+        logger.debug(f"Stdev slope for {df.name}: {slope.iloc[-1] if not slope.empty else 0.0}")
+        return slope.iloc[-1] if not slope.empty else 0.0
+    elif method == 'Linreg':
+        try:
+            sma_src_n = (src * n).rolling(length).mean()
+            sma_src = src.rolling(length).mean()
+            sma_n = n.rolling(length).mean()
+            var_n = n.rolling(length).var()
+            slope = abs(sma_src_n - sma_src * sma_n) / var_n / 2 * mult if var_n.iloc[-1] != 0 else 0.0
+            logger.debug(f"Linreg slope for {df.name}: {slope.iloc[-1] if not slope.empty else 0.0}")
+            return slope.iloc[-1] if not slope.empty else 0.0
+        except Exception as e:
+            logger.error(f"Linreg slope calculation failed for {df.name}: {e}")
+            return 0.0
+    return 0.0
+
+def calculate_trendlines(df, pivots_high, pivots_low, length, method='Atr', mult=1.0, extension_days=3):
+    """
+    Calculate upper and lower trendlines similar to LuxAlgo's method.
+    Returns a list of trendlines with upper and lower lines.
+    """
+    trendlines = []
+    last_timestamp = df['timestamp'].iloc[-1]
+    slope = calculate_slope(df, length, method, mult)
+    
+    # Initialize upper and lower values
+    upper = df['Close'].iloc[-1]
+    lower = df['Close'].iloc[-1]
+    slope_ph = slope
+    slope_pl = slope
+    
+    # Process pivot highs for upper trendline
+    ph = pivots_high.dropna()
+    if not ph.empty:
+        latest_ph = ph.index[-1]
+        upper = ph.loc[latest_ph]
+        slope_ph = slope  # Update slope when pivot high is detected
+        x1 = df['timestamp'].loc[latest_ph]
+        y1 = upper
+        x2 = last_timestamp + pd.Timedelta(days=extension_days)
+        time_diff_hours = (x2 - x1).total_seconds() / 3600
+        y2 = y1 - slope_ph * time_diff_hours
+        trendlines.append({
+            'x1': x1, 'y1': y1,
+            'x2': x2, 'y2': y2,
+            'slope': -slope_ph,  # Upper trendline decreases
+            'timestamp': x1,
+            'type': 'upper'
+        })
+    
+    # Process pivot lows for lower trendline
+    pl = pivots_low.dropna()
+    if not pl.empty:
+        latest_pl = pl.index[-1]
+        lower = pl.loc[latest_pl]
+        slope_pl = slope  # Update slope when pivot low is detected
+        x1 = df['timestamp'].loc[latest_pl]
+        y1 = lower
+        x2 = last_timestamp + pd.Timedelta(days=extension_days)
+        time_diff_hours = (x2 - x1).total_seconds() / 3600
+        y2 = y1 + slope_pl * time_diff_hours
+        trendlines.append({
+            'x1': x1, 'y1': y1,
+            'x2': x2, 'y2': y2,
+            'slope': slope_pl,  # Lower trendline increases
+            'timestamp': x1,
+            'type': 'lower'
+        })
+    
+    return trendlines
+
+def check_price_cross_trendlines(trendlines, df_15m):
+    """
+    Check if the price crosses the trendlines, similar to LuxAlgo's breakout detection.
+    """
+    if len(df_15m) < 3 or not trendlines:
+        return False, False
+    
+    last_close = df_15m['Close'].iloc[-2]
+    prev_close = df_15m['Close'].iloc[-3]
+    last_timestamp = df_15m['timestamp'].iloc[-1]
+    
+    cross_over = False
+    cross_under = False
+    
+    for tl in trendlines:
+        time_from_start = (last_timestamp - tl['x1']).total_seconds() / 3600
+        tl_value = tl['y1'] + tl['slope'] * time_from_start
+        
+        if tl['type'] == 'upper':
+            # Check for upward breakout (price crosses above upper trendline)
+            if prev_close <= tl_value and last_close > tl_value:
+                cross_over = True
+        elif tl['type'] == 'lower':
+            # Check for downward breakout (price crosses below lower trendline)
+            if prev_close >= tl_value and last_close < tl_value:
+                cross_under = True
+    
+    return cross_over, cross_under
+
+def plot_candles(df, symbol, title):
+    if df.empty or len(df) < 5:
+        logger.warning(f"Not enough data to plot candles for {symbol}: {len(df)} rows")
+        return None
+    
+    try:
+        df_plot = df.set_index('timestamp')
+        df_plot = df_plot[['Open', 'High', 'Low', 'Close', 'RSI']].copy()
+        
+        # Define market colors for candlesticks
+        mc = mpf.make_marketcolors(
+            up='#2fc71e', down='#ed2f1a', edge='white', wick='white', volume='in', inherit=True
+        )
+        s = mpf.make_mpf_style(
+            base_mpl_style=['dark_background'], marketcolors=mc, y_on_right=True,
+            facecolor='black', edgecolor='white', figcolor='black', gridcolor='gray', gridstyle='--'
+        )
+        
+        # Calculate trendlines
+        price_high_pivots, price_low_pivots = find_pivot_points(df['Close'], PRIMARY_TRENDLINE_LENGTH)
+        trendlines = calculate_trendlines(df, price_high_pivots, price_low_pivots, PRIMARY_TRENDLINE_LENGTH, CALC_METHOD, MULT)
+        
+        # Prepare additional plots for candlestick panel
+        add_plots = []
+        
+        def trendline_to_series(df, tl):
+            series = pd.Series(index=df['timestamp'], dtype=float)
+            start_idx = df['timestamp'].searchsorted(tl['x1'])
+            end_idx = df['timestamp'].searchsorted(tl['x2'])
+            if end_idx >= len(df):
+                end_idx = len(df) - 1
+            
+            if start_idx < len(df) and end_idx < len(df):
+                time_diff = (tl['x2'] - tl['x1']).total_seconds() / 3600
+                if time_diff != 0:
+                    slope = (tl['y2'] - tl['y1']) / time_diff
+                    for i in range(start_idx, end_idx + 1):
+                        time_from_start = (df['timestamp'].iloc[i] - tl['x1']).total_seconds() / 3600
+                        series.iloc[i] = tl['y1'] + slope * time_from_start
+            return series
+        
+        # Add stored trendlines
+        if symbol in stored_trendlines:
+            for tl_type in ['upper', 'lower']:
+                if tl_type in stored_trendlines[symbol]:
+                    for tl in stored_trendlines[symbol][tl_type]['lines']:
+                        color = '#cf0a83' if tl['type'] == 'upper' else '#027521'
+                        trend_series = trendline_to_series(df, tl)
+                        add_plots.append(mpf.make_addplot(trend_series, color=color, width=0.5, panel=0))
+        
+        # Add new trendlines
+        for tl in trendlines:
+            color = 'red' if tl['type'] == 'upper' else 'teal'  # Match LuxAlgo colors
+            trend_series = trendline_to_series(df, tl)
+            add_plots.append(mpf.make_addplot(trend_series, color=color, linestyle='--', width=0.5, panel=0))
+        
+        # Prepare RSI plot
+        rsi = df_plot['RSI']
+        rsi_plot = [
+            mpf.make_addplot(rsi, color='white', panel=1, ylabel='RSI'),
+            mpf.make_addplot([70] * len(rsi), color='red', linestyle='--', alpha=0.5, panel=1),
+            mpf.make_addplot([30] * len(rsi), color='green', linestyle='--', alpha=0.5, panel=1),
+        ]
+        
+        # Combine plots
+        all_plots = add_plots + rsi_plot
+        
+        # Plot using mplfinance
+        fig, axlist = mpf.plot(
+            df_plot[['Open', 'High', 'Low', 'Close']],
+            type='candle',
+            style=s,
+            figratio=(10, 8),
+            datetime_format='%H:%M',
+            ylabel='Price ($)',
+            addplot=all_plots,
+            panel_ratios=(3, 1),
+            returnfig=True,
+            tight_layout=True
+        )
+        
+        # Customize title
+        axlist[0].set_title(f"{symbol} - {title}", fontsize=25, style='italic', fontfamily='sans-serif', color='white')
+        
+        # Save to buffer
+        buf = BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', facecolor='black')
+        buf.seek(0)
+        plt.close(fig)
+        return buf
+    except Exception as e:
+        logger.error(f"Error plotting chart for {symbol}: {e}")
+        return None
+
+# Telegram Functions
+async def send_telegram_message(bot: Bot, chat_id: str, symbol: str, message: str, image_buffer, close_price):
+    if image_buffer is None:
+        logger.warning(f"No image buffer for {symbol}, skipping message")
+        return
+    
+    try:
+        await bot.send_photo(chat_id=chat_id, photo=image_buffer)
+        keyboard = [[InlineKeyboardButton("BUY", callback_data=f"buy_{symbol}_{close_price}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
+        logger.info(f"Sent alert for {symbol}: {message}")
+    except Exception as e:
+        logger.error(f"Failed to send Telegram message for {symbol}: {e}")
+
+async def handle_telegram_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try:
+        await query.answer()
+    except telegram.error.BadRequest as e:
+        logger.warning(f"Failed to answer callback query: {e}")
+    
+    try:
+        callback_data = query.data.replace('-', '_')
+        parts = callback_data.split('_')
+        if len(parts) != 3:
+            raise ValueError(f"Invalid callback data format: {callback_data}")
+        
+        action = parts[0]
+        symbol = parts[1]
+        close_price = float(parts[2])
+        
+        if action != "buy":
+            raise ValueError(f"Unknown action: {action}")
+        
+        buy_order_id, buy_quantity = place_market_order(symbol, "BUY")
+        if not buy_order_id:
+            await query.edit_message_text(f"Failed to place BUY order for {symbol}")
+            return
+        
+        await asyncio.sleep(5)
+        
+        available_balance = get_account_balance(symbol)
+        
+        best_bid, best_ask = get_current_price(symbol)
+        if not best_bid or not best_ask:
+            await query.edit_message_text(f"Failed to get price for {symbol}")
+            return
+        sell_price = best_ask * 1.01
+        symbol_info = get_symbol_info(symbol)
+        if not symbol_info:
+            await query.edit_message_text(f"Failed to get symbol info for {symbol}")
+            return
+        precision = int(symbol_info['basePrecision'])
+        quote_precision = int(symbol_info['quotePrecision'])
+        sell_quantity = float(buy_quantity) * 0.995
+        sell_quantity = float(f"{sell_quantity:.{precision}f}")
+        sell_price = float(f"{sell_price:.{quote_precision}f}")
+        
+        if available_balance < sell_quantity:
+            await query.edit_message_text(f"Insufficient balance for SELL: {available_balance} < {sell_quantity}")
+            logger.error(f"Insufficient balance for {symbol}: {available_balance} < {sell_quantity}")
+            return
+        
+        sell_order_id = place_limit_order(symbol, "SELL", sell_quantity, sell_price)
+        if not sell_order_id:
+            await query.edit_message_text(f"Failed to place SELL order for {symbol}")
+            logger.error(f"SELL order failed for {symbol} after BUY, not storing in active_orders")
+            return
+        
+        active_orders[symbol] = {
+            'order_id': sell_order_id,
+            'sell_price': sell_price,
+            'side': 'BUY',
+            'quantity': sell_quantity
+        }
+        await query.edit_message_text(f"Position opened with BUY for {symbol} at {best_bid:.2f}\nSELL order placed at {sell_price:.2f}")
+    except Exception as e:
+        logger.error(f"Error in callback handler: {e}")
+        await query.edit_message_text(f"Error processing request: {str(e)}")
+
+async def check_alerts(bot: Bot):
+    if not SELECTED_SYMBOLS:
+        logger.error("No symbols selected to check - bot cannot proceed without symbols")
+        return
+    
+    for symbol in SELECTED_SYMBOLS:
+        try:
+            # Check cooldown
+            current_time = datetime.now()
+            last_alert = last_alert_times.get(symbol)
+            if last_alert and (current_time - last_alert).total_seconds() < 1 * 3600:  # 2-hour cooldown
+                logger.info(f"Cooldown active for {symbol}, skipping alert")
+                continue
+
+            historical_data_8h = get_historical_data(symbol, interval, limit=250)
+            if historical_data_8h.empty:
+                logger.warning(f"No 8h historical data fetched for {symbol}")
+                continue
+
+            historical_data_15m = get_historical_data(symbol, CHECK_INTERVAL, limit=5)
+            if historical_data_15m.empty or len(historical_data_15m) < 5:
+                logger.warning(f"No or insufficient 15m historical data fetched for {symbol}")
+                continue
+
+            historical_data_8h.name = symbol
+            historical_data_15m.name = symbol
+
+            # Calculate trendlines
+            price_high_pivots, price_low_pivots = find_pivot_points(historical_data_8h['Close'], PRIMARY_TRENDLINE_LENGTH)
+            trendlines = calculate_trendlines(historical_data_8h, price_high_pivots, price_low_pivots, PRIMARY_TRENDLINE_LENGTH, CALC_METHOD, MULT)
+            
+            # Combine stored and new trendlines for checking
+            current_stored = stored_trendlines.get(symbol, {'upper': {'lines': [], 'stored_time': None}, 'lower': {'lines': [], 'stored_time': None}})
+            all_trendlines = (current_stored['upper']['lines'] + current_stored['lower']['lines'] + trendlines)
+
+            cross_over, cross_under = check_price_cross_trendlines(all_trendlines, historical_data_15m)
+
+            if cross_over:
+                message = f"Buy #{symbol}"
+                title = f'Price Cross Over Trendline {symbol}'
+                image_buffer = plot_candles(historical_data_8h, symbol, title)
+                if image_buffer:
+                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
+                                              historical_data_15m['Close'].iloc[-1])
+                    last_alert_times[symbol] = current_time  # Update last alert time
+                    # Store new trendlines
+                    new_upper_lines = [tl for tl in trendlines if tl['type'] == 'upper']
+                    new_lower_lines = [tl for tl in trendlines if tl['type'] == 'lower']
+                    updated_upper_lines = current_stored['upper']['lines'] + new_upper_lines
+                    updated_lower_lines = current_stored['lower']['lines'] + new_lower_lines
+                    if len(updated_upper_lines) > MAX_STORED_TRENDLINES // 2:
+                        updated_upper_lines = sorted(updated_upper_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES // 2:]
+                    if len(updated_lower_lines) > MAX_STORED_TRENDLINES // 2:
+                        updated_lower_lines = sorted(updated_lower_lines, key=lambda x: x['timestamp'])[-MAX_STORED_TRENDLINES // 2:]
+                    
+                    stored_trendlines[symbol] = {
+                        'upper': {'lines': updated_upper_lines, 'stored_time': current_time},
+                        'lower': {'lines': updated_lower_lines, 'stored_time': current_time}
+                    }
+                else:
+                    logger.warning(f"Failed to generate chart for {symbol}")
+            
+            if cross_under and symbol in active_orders:
+                message = f"Sell #{symbol}"
+                title = f'Price Cross Under Trendline {symbol}'
+                image_buffer = plot_candles(historical_data_8h, symbol, title)
+                if image_buffer:
+                    await send_telegram_message(bot, config.CHAT_ID, symbol, message, image_buffer, 
+                                              historical_data_15m['Close'].iloc[-1])
+                    last_alert_times[symbol] = current_time  # Update last alert time
+                
+                order_info = active_orders[symbol]
+                if order_info['side'] == 'BUY':
+                    if cancel_order(symbol, order_info['order_id']):
+                        sell_order_id, _ = place_market_order(symbol, "SELL", quantity=order_info['quantity'])
+                        if sell_order_id:
+                            del active_orders[symbol]
+                            await bot.send_message(chat_id=config.CHAT_ID, 
+                                                 text=f"Position closed with SELL for {symbol} due to price cross under trendline")
+                        else:
+                            logger.error(f"Failed to place market SELL for {symbol}")
+                    else:
+                        logger.error(f"Failed to cancel SELL order for {symbol}")
+        except Exception as e:
+            logger.error(f"Error checking {symbol}: {e}")
+
+async def run_alert_loop(application: Application):
+    bot = application.bot
+    while True:
+        await check_alerts(bot)
+        await asyncio.sleep(300)
+
+async def main():
+    application = Application.builder().token(config.TELEGRAM_TOKEN).build()
+    application.add_handler(CallbackQueryHandler(handle_telegram_callback))
+    asyncio.create_task(run_alert_loop(application))
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    nest_asyncio.apply()
+    asyncio.run(main())

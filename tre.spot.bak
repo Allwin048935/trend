@@ -35,12 +35,12 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('ccxt').setLevel(logging.WARNING)
 
 # Time interval and trendline parameters
-interval = '4h'  # For trendline calculation
-CHECK_INTERVAL = '4h'  # For price cross check
+interval = '1h'  # For trendline calculation
+CHECK_INTERVAL = '1h'  # For price cross check
 PRIMARY_TRENDLINE_LENGTH = 30
 SECONDARY_TRENDLINE_LENGTH = 30
-INITIAL_MAX_TRENDLINES = 3  # Initial limit per type
-MAX_STORED_TRENDLINES = 9  # Maximum total stored trendlines per type
+INITIAL_MAX_TRENDLINES = 2  # Initial limit per type
+MAX_STORED_TRENDLINES = 2  # Maximum total stored trendlines per type
 TRADE_FEE_PERCENT = 0.05  # 0.1% fee for buy and sell
 
 # Binance client
@@ -55,7 +55,7 @@ binance = ccxt.binance({
 stored_trendlines = {}  # Format: {symbol: {'price': {'lines': [...], 'stored_time': datetime}, 'rsi': {...}}}
 active_positions = {}  # Format: {symbol: {'buy_price': float, 'quantity': float, 'amount_usdt': float}}
 last_alert_times = {}  # Track last alert time per symbol
-virtual_balance = 1000.0  # Starting virtual balance in USD
+virtual_balance = 10000.0  # Starting virtual balance in USD
 trade_history = []  # Store trade details for tracking
 
 # Fetch SELECTED_SYMBOLS dynamically from Binance Futures
@@ -358,7 +358,7 @@ async def check_alerts(bot: Bot):
         try:
             current_time = datetime.now()
             last_alert = last_alert_times.get(symbol)
-            if last_alert and (current_time - last_alert).total_seconds() < 14400:
+            if last_alert and (current_time - last_alert).total_seconds() < 3600:
                 logger.info(f"Cooldown active for {symbol}, skipping alert")
                 continue
             historical_data_8h = get_historical_data(symbol, interval, limit=250)
@@ -440,13 +440,13 @@ async def check_alerts(bot: Bot):
                 
                 sell_trigger = False
                 sell_reason = ""
-                if profit_percentage >= 1.0:
+                if profit_percentage >= 10.0:
                     sell_trigger = True
                     sell_reason = "1% profit target reached"
                 elif cross_under:
                     sell_trigger = True
                     sell_reason = "price cross under trendline"
-                elif profit_percentage <= -1:  # Stop-loss at -0.5%
+                elif profit_percentage <= -10:  # Stop-loss at -0.5%
                     sell_trigger = True
                     sell_reason = "stop-loss triggered at -1%"
                 
